@@ -18,7 +18,7 @@ pub fn controls_to_phoebus(msg: Message) -> Result<Message, serde_json::Error> {
 
 pub fn phoebus_to_controls(msg: Message) -> Result<Message, serde_json::Error> {
     let phoebus_alarm: PhoebusAlarm = serde_json::from_str(&msg.value)?;
-    let controls_alarm: ControlsAlarm = phoebus_alarm.into();
+    let controls_alarm = ControlsAlarm::from(phoebus_alarm);
     Ok(Message {
         key: msg.key,
         value: serde_json::to_string(&controls_alarm)?,
@@ -29,14 +29,15 @@ pub fn phoebus_to_controls(msg: Message) -> Result<Message, serde_json::Error> {
 struct PhoebusAlarm;
 
 impl From<ControlsAlarm> for PhoebusAlarm {
-    fn from(controls_alarm: ControlsAlarm) -> Self {
+    fn from(_controls_alarm: ControlsAlarm) -> Self {
         // Map fields from ControlsAlarm to PhoebusAlarm here.
         // This is a placeholder implementation and should be replaced with actual mapping logic.
         PhoebusAlarm
     }
 }
-impl Into<ControlsAlarm> for PhoebusAlarm {
-    fn into(self) -> ControlsAlarm {
+
+impl From<PhoebusAlarm> for ControlsAlarm {
+    fn from(_phoebus_alarm: PhoebusAlarm) -> ControlsAlarm {
         // Map fields from PhoebusAlarm to ControlsAlarm here.
         // This is a placeholder implementation and should be replaced with actual mapping logic.
         ControlsAlarm {
