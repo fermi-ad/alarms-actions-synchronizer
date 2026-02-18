@@ -13,9 +13,6 @@ jobs:
       contents: write
       pull-requests: write
     with:
+      pull-git-submodules: true
       references-internal-git-repo: true
       static-dependencies: 'libcurl4-openssl-dev librdkafka-dev libsasl2-dev'
-
-# If using a git submodule, add 
-#    with:
-#      pull-git-submodules: true

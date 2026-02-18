@@ -1,15 +1,53 @@
 use super::Synchronizer;
+use crate::util::controls_to_phoebus;
 use rust_pubsub_lib::{
-    Publisher, Subscriber,
+    Message, Publisher, Subscriber,
     kafka_impl::{KafkaPublisher, KafkaSubscriber},
 };
-use std::env;
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+};
 use tokio_stream::StreamExt;
 use tracing::warn;
 
 pub struct SyncImpl {
     controls: KafkaSubscriber,
-    phoebus: Vec<KafkaPublisher>,
+    phoebus_devices: HashMap<String, HashSet<String>>,
+    phoebus_publishers: HashMap<String, KafkaPublisher>,
+}
+
+impl SyncImpl {
+    fn find_topic(&self, msg_key: &Option<String>) -> String {
+        msg_key
+            .as_ref()
+            .and_then(|device| {
+                self.phoebus_devices
+                    .iter()
+                    .find(|(_, devices)| devices.contains(device))
+                    .map(|(topic, _)| topic.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    fn process_message(&mut self, msg: Message) {
+        let topic = self.find_topic(&msg.key);
+        match self.phoebus_publishers.get_mut(&topic) {
+            Some(publisher) => {
+                if let Err(err) = controls_to_phoebus(msg)
+                    .map_err(|e| format!("{e:?}"))
+                    .and_then(|msg| publisher.publish(msg).map_err(|e| format!("{e:?}")))
+                {
+                    warn!("Failed publishing to Phoebus Kafka.\n  Cause: {err}");
+                }
+            }
+            None => {
+                warn!(
+                    "Received message for device with no matching Phoebus topic. Message: {msg:?}"
+                );
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -28,9 +66,15 @@ impl Synchronizer for SyncImpl {
             .collect();
         SyncImpl {
             controls: KafkaSubscriber::new(controls_host, controls_topic),
-            phoebus: phoebus_topics
+            phoebus_devices: HashMap::new(),
+            phoebus_publishers: phoebus_topics
                 .into_iter()
-                .map(|topic| KafkaPublisher::new(phoebus_host.clone(), topic))
+                .map(|topic| {
+                    (
+                        topic.clone(),
+                        KafkaPublisher::new(phoebus_host.clone(), topic),
+                    )
+                })
                 .collect(),
         }
     }
@@ -38,20 +82,16 @@ impl Synchronizer for SyncImpl {
     async fn synchronize(&mut self) {
         let mut controls_stream = self.controls.get_stream();
         loop {
-            let msg_opt = controls_stream.next().await;
-            if msg_opt.is_none() {
-                controls_stream = self.controls.get_stream();
-                continue;
-            }
-            match msg_opt.unwrap() {
+            match controls_stream.next().await.unwrap() {
+                // Unwrap is safe here because the stream only ends if the consumer dies, in which case the service should terminate.
                 Ok(msg) => {
-                    for publisher in &mut self.phoebus {
-                        if let Err(err) = publisher.publish(msg.clone()) {
-                            warn!("Failed publishing to Phoebus Kafka.\n  Cause: {err:?}");
-                        }
-                    }
+                    self.process_message(msg);
                 }
-                Err(e) => warn!("Error receiving message from Controls Kafka.\n  Cause: {e:?}"),
+                Err(e) => {
+                    warn!(
+                        "Error receiving message from Controls Kafka. Attempting to reconnect.\n  Cause: {e:?}"
+                    );
+                }
             }
         }
     }

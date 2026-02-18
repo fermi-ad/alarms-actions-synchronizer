@@ -1,4 +1,5 @@
 use super::Synchronizer;
+use crate::util::phoebus_to_controls;
 use rust_pubsub_lib::{
     Message, Publisher, Subscriber,
     kafka_impl::{KafkaPublisher, KafkaSubscriber},
@@ -15,16 +16,11 @@ impl SyncImpl {
     fn generate_stream_map(
         &mut self,
     ) -> StreamMap<usize, StreamNotifyClose<BroadcastStream<Message>>> {
-        let streams = self
-            .phoebus
+        self.phoebus
             .iter_mut()
-            .map(|sub| sub.get_stream())
-            .collect::<Vec<_>>();
-        let mut stream_map = StreamMap::new();
-        for (idx, stream) in streams.into_iter().enumerate() {
-            stream_map.insert(idx, StreamNotifyClose::new(stream));
-        }
-        stream_map
+            .map(|sub| StreamNotifyClose::new(sub.get_stream()))
+            .enumerate()
+            .collect::<StreamMap<_, _>>()
     }
 }
 #[async_trait::async_trait]
@@ -69,21 +65,14 @@ impl Synchronizer for SyncImpl {
                 );
                 continue;
             }
-            let msg_result = msg_opt.unwrap();
-            match msg_result {
-                Ok(msg) => match self.controls.publish(msg) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        warn!(
-                            "Publisher failed connecting to Controls Kafka. Attempting to reconnect.\n  Cause: {e:?}"
-                        );
-                    }
-                },
-                Err(e) => {
-                    warn!(
-                        "Consumer lost connection to Phoebus Kafka. Attempting to reconnect.\n  Cause: {e:?}"
-                    );
-                }
+
+            if let Err(e) = msg_opt
+                .unwrap()
+                .map_err(|e| format!("{e:?}"))
+                .and_then(|msg| phoebus_to_controls(msg).map_err(|e| format!("{e:?}")))
+                .and_then(|msg| self.controls.publish(msg).map_err(|e| format!("{e:?}")))
+            {
+                warn!("Failure publishing to Controls Kafka\n  Cause: {e}");
             }
         }
     }
