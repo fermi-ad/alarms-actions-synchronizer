@@ -1,17 +1,4 @@
 pub mod phoebus {
-    #[derive(Debug)]
-    pub enum Operation {
-        Command,
-        Config,
-    }
-    impl Operation {
-        pub fn get_key_prefix(&self) -> &'static str {
-            match self {
-                Operation::Command => "command",
-                Operation::Config => "config",
-            }
-        }
-    }
 
     #[derive(serde::Serialize, serde::Deserialize)]
     pub struct Command {
@@ -20,7 +7,7 @@ pub mod phoebus {
         pub command: String,
     }
 
-    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct Config {
         pub user: String,
         pub host: String,
@@ -36,6 +23,53 @@ pub mod phoebus {
         pub actions: Option<Vec<TitleDetails>>,
     }
 
+    #[derive(Debug)]
+    pub struct Key {
+        pub operation: Operation,
+        pub display_path: String,
+        pub device: String,
+    }
+    impl From<String> for Key {
+        fn from(value: String) -> Self {
+            let (prefix, device) = value.rsplit_once("/").unwrap();
+            let (command_str, display_path) = prefix.split_once(":").unwrap();
+            Key {
+                operation: Operation::from(command_str),
+                display_path: display_path.to_owned(),
+                device: device.to_owned(),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub enum Operation {
+        Command,
+        Config,
+        Other,
+    }
+    impl Operation {
+        pub fn get_key_prefix(&self) -> &'static str {
+            match self {
+                Operation::Command => "command",
+                Operation::Config => "config",
+                Operation::Other => "",
+            }
+        }
+
+        pub fn get_err_string_for_other() -> String {
+            "Cannot operate on type 'Other'".to_string()
+        }
+    }
+    impl From<&str> for Operation {
+        fn from(value: &str) -> Self {
+            match value {
+                "command" => Operation::Command,
+                "config" => Operation::Config,
+                _ => Operation::Other,
+            }
+        }
+    }
+
     #[derive(Clone)]
     pub struct PvMetadata {
         pub config: Config,
@@ -43,7 +77,7 @@ pub mod phoebus {
         pub phoebus_topic: String,
     }
 
-    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct TitleDetails {
         pub title: String,
         pub details: String,
@@ -64,6 +98,8 @@ mod google {
     }
 }
 pub use google::protobuf as generated;
+
+pub const ACK_COMMAND: &str = "acknowledge";
 
 #[derive(Clone, Debug)]
 pub struct CachedState {

@@ -83,7 +83,7 @@ impl SyncImpl {
             State::Bypassed => Operation::Config,
             _ => {
                 debug!(
-                    "Received alarm update for device {} with new state {:?} that does not require synchronization. Updating cache and doing nothing.",
+                    "Received Controls alarm update for device {} with new state {:?} that does not require synchronization. Updating cache and doing nothing.",
                     controls_alarm.device,
                     controls_alarm.state()
                 );

@@ -1,5 +1,6 @@
 use crate::{
     models::{
+        ACK_COMMAND,
         alarm::{Status, status::State},
         phoebus::{Command, Config, Operation, PvMetadata},
     },
@@ -8,7 +9,6 @@ use crate::{
 use chrono::{TimeZone, Utc};
 use rust_pubsub_lib::Message;
 
-const ACK_COMMAND: &str = "acknowledge";
 const CONTROLS_HOST: &str = "Flutter Alarms App";
 
 pub fn controls_to_phoebus(
@@ -19,6 +19,7 @@ pub fn controls_to_phoebus(
     let topic = match operation {
         Operation::Command => get_command_topic(&metadata.phoebus_topic),
         Operation::Config => metadata.phoebus_topic.clone(),
+        _ => return Err(Operation::get_err_string_for_other()),
     };
     let phoebus_message = transform(controls_alarm, operation, metadata)?;
     Ok((topic, phoebus_message))
@@ -46,7 +47,7 @@ fn transform(
             command: ACK_COMMAND.to_string(),
         }),
         Operation::Config => {
-            let enabled = Some(get_enabled_string(&controls_alarm));
+            let enabled = Some(get_enabled_string(controls_alarm));
             let prev_config = metadata.config.clone();
             serde_json::to_string(&Config {
                 user: controls_alarm.user.clone(),
@@ -55,6 +56,7 @@ fn transform(
                 ..prev_config
             })
         }
+        _ => return Err(Operation::get_err_string_for_other()),
     }
     .map_err(|e| format!("{e:?}"))?;
     Ok(Message {
