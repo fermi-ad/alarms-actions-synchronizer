@@ -1,49 +1,53 @@
-use super::Synchronizer;
-use crate::util::phoebus_to_controls;
+use super::{AlarmStateCache, PvCache, Synchronizer, SynchronizerConfig};
+use crate::{models::phoebus::PvMetadata, utils::get_command_topic};
 use rust_pubsub_lib::{
     Message, Publisher, Subscriber,
     kafka_impl::{KafkaPublisher, KafkaSubscriber},
 };
-use std::env;
 use tokio_stream::{StreamExt, StreamMap, StreamNotifyClose, wrappers::BroadcastStream};
 use tracing::warn;
 
 pub struct SyncImpl {
+    alarm_states: AlarmStateCache,
     controls: KafkaPublisher,
     phoebus: Vec<KafkaSubscriber>,
+    pv_metadata: PvCache,
 }
 impl SyncImpl {
     fn generate_stream_map(
         &mut self,
     ) -> StreamMap<usize, StreamNotifyClose<BroadcastStream<Message>>> {
         self.phoebus
-            .iter_mut()
+            .iter()
             .map(|sub| StreamNotifyClose::new(sub.get_stream()))
             .enumerate()
             .collect::<StreamMap<_, _>>()
     }
+
+    async fn process_message(&mut self, msg: Message) {
+        todo!()
+    }
 }
 #[async_trait::async_trait]
 impl Synchronizer for SyncImpl {
-    fn new() -> Self {
-        let controls_host =
-            env::var("CONTROLS_HOST").expect("CONTROLS_HOST environment variable not set");
-        let controls_topic =
-            env::var("CONTROLS_TOPIC").expect("CONTROLS_TOPIC environment variable not set");
-        let phoebus_host =
-            env::var("PHOEBUS_HOST").expect("PHOEBUS_HOST environment variable not set");
-        let phoebus_topics: Vec<String> = env::var("PHOEBUS_TOPICS")
-            .expect("PHOEBUS_TOPICS environment variable not set")
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .collect();
-
+    fn new(config: SynchronizerConfig) -> Self {
         SyncImpl {
-            controls: KafkaPublisher::new(controls_host, controls_topic),
-            phoebus: phoebus_topics
+            alarm_states: config.alarm_states,
+            controls: KafkaPublisher::new(config.controls_host, config.controls_topic),
+            phoebus: config
+                .phoebus_topics
                 .into_iter()
-                .map(|topic| KafkaSubscriber::new(phoebus_host.clone(), topic))
+                .flat_map(|topic| {
+                    [
+                        KafkaSubscriber::new(
+                            config.phoebus_host.clone(),
+                            get_command_topic(&topic),
+                        ),
+                        KafkaSubscriber::new(config.phoebus_host.clone(), topic),
+                    ]
+                })
                 .collect(),
+            pv_metadata: config.pv_metadata,
         }
     }
 
@@ -66,13 +70,15 @@ impl Synchronizer for SyncImpl {
                 continue;
             }
 
-            if let Err(e) = msg_opt
-                .unwrap()
-                .map_err(|e| format!("{e:?}"))
-                .and_then(|msg| phoebus_to_controls(msg).map_err(|e| format!("{e:?}")))
-                .and_then(|msg| self.controls.publish(msg).map_err(|e| format!("{e:?}")))
-            {
-                warn!("Failure publishing to Controls Kafka\n  Cause: {e}");
+            match msg_opt.unwrap() {
+                Ok(msg) => {
+                    self.process_message(msg).await;
+                }
+                Err(e) => {
+                    warn!(
+                        "Error with the internal Kafka Consumer stream. Reconnect in progress.\n Cause: {e:?}"
+                    );
+                }
             }
         }
     }

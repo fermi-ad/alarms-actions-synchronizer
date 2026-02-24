@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1.89"
+chrono = "0.4.44"
 prost = "0.14.3"
 rust-pubsub-lib = { git = "https://github.com/fermi-ad/rust-pubsub-lib", tag = "v4.0.1" }
 serde = { version = "1.0.228", features = ["derive"] }
