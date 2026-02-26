@@ -1,7 +1,6 @@
-use super::{AlarmStateCache, PvCache, Synchronizer, SynchronizerConfig};
-mod transform;
 use crate::{
     models::{
+        AlarmStateCache, PvCache, Synchronizer, SynchronizerConfig,
         alarm::{
             Status,
             status::{Source, State},
@@ -10,22 +9,21 @@ use crate::{
     },
     utils::get_command_topic,
 };
-use rust_pubsub_lib::{
-    Message, Publisher, Subscriber,
-    kafka_impl::{KafkaPublisher, KafkaSubscriber},
-};
+use rust_pubsub_lib::{Message, Publisher, Subscriber};
 use std::collections::HashMap;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, warn};
 
-pub struct SyncImpl {
+mod transform;
+
+pub struct SyncImpl<P: Publisher, S: Subscriber> {
     alarms_states: AlarmStateCache,
-    controls: KafkaSubscriber,
-    phoebus_publishers: HashMap<String, KafkaPublisher>,
+    controls: S,
+    phoebus_publishers: HashMap<String, P>,
     pv_metadata: PvCache,
 }
 
-impl SyncImpl {
+impl<P: Publisher, S: Subscriber> SyncImpl<P, S> {
     async fn process_message(&mut self, msg: Message) {
         let controls_alarm = match serde_json::from_str::<Status>(&msg.value) {
             Ok(alarm) => alarm,
@@ -129,24 +127,23 @@ impl SyncImpl {
 }
 
 #[async_trait::async_trait]
-impl Synchronizer for SyncImpl {
+impl<P: Publisher + Send + Sync, S: Subscriber + Send + Sync> Synchronizer<P, S>
+    for SyncImpl<P, S>
+{
     fn new(config: SynchronizerConfig) -> Self {
         SyncImpl {
             alarms_states: config.alarm_states,
-            controls: KafkaSubscriber::new(config.controls_host, config.controls_topic),
+            controls: S::new(config.controls_host, config.controls_topic),
             phoebus_publishers: config
                 .phoebus_topics
                 .into_iter()
                 .flat_map(|topic| {
                     let command_topic = get_command_topic(&topic);
                     [
-                        (
-                            topic.clone(),
-                            KafkaPublisher::new(config.phoebus_host.clone(), topic),
-                        ),
+                        (topic.clone(), P::new(config.phoebus_host.clone(), topic)),
                         (
                             command_topic.clone(),
-                            KafkaPublisher::new(config.phoebus_host.clone(), command_topic),
+                            P::new(config.phoebus_host.clone(), command_topic),
                         ),
                     ]
                 })
