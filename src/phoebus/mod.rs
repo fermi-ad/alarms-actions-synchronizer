@@ -737,14 +737,9 @@ mod test {
             },
         );
         config.enabled = None;
-        sync_with_true.pv_metadata.write().await.insert(
-            String::from("MyDevice"),
-            PvMetadata {
-                config: config.clone(),
-                display_path: String::from("my/path/to"),
-                phoebus_topic: String::from("testTopic"),
-            },
-        );
+
+        // Tests when there's no previous config cached - defaults to an inactive state
+        sync_with_true.pv_metadata.write().await.remove("MyDevice");
 
         TestInstance::check_that(sync_with_true)
             .with(message)
@@ -904,6 +899,26 @@ mod test {
         TestInstance::check_that(sync)
             .with(message)
             .meets(async || logs_contain("Received configuration update from Phoebus to bypass alarm for device 'MyDevice', but it is already bypassed. Updating cached PV config only."))
+            .await
+            .expect("The expected log message was not detected.");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn should_not_sync_unknown_operations() {
+        let sync: SyncImpl<TestSubscriber> =
+            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let message = Message {
+            key: Some(String::from("some-other-command:path/to/MyDevice")),
+            value: String::new(),
+        };
+        TestInstance::check_that(sync)
+            .with(message)
+            .meets(async || {
+                logs_contain(
+                    "Received Phoebus message that is not a config or a command. Doing nothing.",
+                )
+            })
             .await
             .expect("The expected log message was not detected.");
     }
