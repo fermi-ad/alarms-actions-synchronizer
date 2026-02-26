@@ -302,127 +302,27 @@ impl<P: Publisher, S: Subscriber + Send + Sync> Synchronizer<P, S> for SyncImpl<
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::{sync::Arc, time::Duration};
-    use tokio::{
-        sync::broadcast::{Receiver, Sender, channel},
-        time::sleep,
+    use crate::utils::testing::{
+        TestInstance, TestPublisher, TestSubscriber, get_mock_sync_config,
     };
+    use std::{sync::Arc, time::Duration};
+    use tokio::sync::broadcast::Sender;
 
-    #[derive(Debug)]
-    struct TestPublisher;
-    impl Publisher for TestPublisher {
-        fn new(_: String, _: String) -> Self {
-            unimplemented!()
-        }
-
-        fn publish(&mut self, _: Message) -> Result<(), rust_pubsub_lib::PubSubError> {
-            unimplemented!()
-        }
+    fn get_sender(sync: &SyncImpl<TestSubscriber>) -> Sender<Message> {
+        sync.phoebus.get("testTopicCommand").unwrap().sender.clone()
     }
 
-    #[derive(Debug)]
-    struct TestSubscriber {
-        sender: Sender<Message>,
-        _receiver: Receiver<Message>,
-    }
-    impl Clone for TestSubscriber {
-        fn clone(&self) -> Self {
-            TestSubscriber::new(String::new(), String::new())
-        }
-    }
-    impl Subscriber for TestSubscriber {
-        fn new(_: String, _: String) -> Self {
-            let (sender, _receiver) = channel(10);
-            TestSubscriber { sender, _receiver }
-        }
-
-        fn get_stream(&self) -> BroadcastStream<Message> {
-            BroadcastStream::new(self.sender.subscribe())
-        }
-    }
-
-    fn get_demo_sync_config() -> SynchronizerConfig {
-        SynchronizerConfig::new(
-            String::new(),
-            String::new(),
-            String::new(),
-            vec![String::from("testTopic")],
-        )
-    }
-
-    async fn send_message_when_sync_starts(sender: &Sender<Message>, message: Message) {
-        for _ in 0..10 {
-            sleep(Duration::from_millis(100)).await;
-            if sender.receiver_count() > 1 {
-                let _ = sender.send(message);
-                return;
-            }
-        }
-        panic!("The sync service did not start");
-    }
-
-    async fn wait_for_condition(condition: impl AsyncFn() -> bool) -> bool {
-        for _ in 0..10 {
-            if condition().await {
-                return true;
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
-        return false;
-    }
-
-    struct TestInstance {
-        sync: SyncImpl<TestSubscriber>,
-        message: Option<Message>,
-    }
-    impl TestInstance {
-        fn check_that(sync: SyncImpl<TestSubscriber>) -> Self {
-            TestInstance {
-                sync,
-                message: None,
-            }
-        }
-
-        fn with(mut self, message: Message) -> Self {
-            self.message = Some(message);
-            self
-        }
-
-        async fn meets(self, condition: impl AsyncFn() -> bool) -> Result<(), ()> {
-            // Captures copies of objects we can use to remotely manipulate the synchronizer and check it did what we wanted
-            let sender = self
-                .sync
-                .phoebus
-                .get("testTopicCommand")
-                .unwrap()
-                .sender
-                .clone();
-
-            let message = self.message.clone().unwrap();
-
-            let mut sync = self.sync;
-
-            // Asynchronously kick off the synchronizer in a separate task
-            let handle = tokio::spawn(async move {
-                Synchronizer::<TestPublisher, TestSubscriber>::synchronize(&mut sync).await;
-            });
-
-            send_message_when_sync_starts(&sender, message).await;
-
-            let result = wait_for_condition(condition).await;
-
-            // Stop the synchronizer
-            handle.abort();
-
-            // Check that the desired condition was met
-            if result { Ok(()) } else { Err(()) }
-        }
+    fn get_test_objects() -> (SyncImpl<TestSubscriber>, Sender<Message>) {
+        let sync: SyncImpl<TestSubscriber> =
+            Synchronizer::<TestPublisher, TestSubscriber>::new(get_mock_sync_config());
+        let sender = get_sender(&sync);
+        (sync, sender)
     }
 
     #[test]
     fn should_create_new_synchronizer() {
         let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+            Synchronizer::<TestPublisher, TestSubscriber>::new(get_mock_sync_config());
         assert_eq!((), sync._controls);
         assert!(sync.phoebus.contains_key("testTopic"));
         assert!(sync.phoebus.contains_key("testTopicCommand"));
@@ -431,17 +331,14 @@ mod test {
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn should_not_sync_messages_without_keys() {
-        let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync, sender) = get_test_objects();
 
         let message = Message {
             key: None,
             value: String::new(),
         };
 
-        TestInstance::check_that(sync)
-            .with(message)
-            .meets(async || {
+        TestInstance::check_that(sync).when(sender, message).satisfies(async || {
                 logs_contain(
                     "Got message with no key. There is a problem with the pub-sub crate or with the messages in the Phoebus Kafka.",
                 )
@@ -452,8 +349,7 @@ mod test {
 
     #[tokio::test]
     async fn should_sync_valid_acknowledge_commands() {
-        let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync, sender) = get_test_objects();
 
         let alarm_states = Arc::clone(&sync.alarm_states);
 
@@ -468,8 +364,8 @@ mod test {
         };
 
         TestInstance::check_that(sync)
-            .with(message)
-            .meets(async || {
+            .when(sender, message)
+            .satisfies(async || {
                 alarm_states
                     .read()
                     .await
@@ -483,8 +379,7 @@ mod test {
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn should_not_sync_unparseable_command_messages() {
-        let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync, sender) = get_test_objects();
 
         let message = Message {
             key: Some(String::from("command:not/a/real/Device")),
@@ -492,8 +387,8 @@ mod test {
         };
 
         TestInstance::check_that(sync)
-            .with(message)
-            .meets(async || logs_contain("Failed to deserialize Phoebus command"))
+            .when(sender, message)
+            .satisfies(async || logs_contain("Failed to deserialize Phoebus command"))
             .await
             .expect("The expected log message was never recorded");
     }
@@ -501,8 +396,7 @@ mod test {
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn should_not_sync_invalid_commands() {
-        let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync, sender) = get_test_objects();
 
         let command = Command {
             user: String::from("my user"),
@@ -515,8 +409,8 @@ mod test {
         };
 
         TestInstance::check_that(sync)
-            .with(message)
-            .meets(async || {
+            .when(sender, message)
+            .satisfies(async || {
                 logs_contain(
                     "Received Phoebus command that does not need to be processed. Doing nothing.",
                 )
@@ -528,8 +422,7 @@ mod test {
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn should_not_sync_already_synced_commands() {
-        let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync, sender) = get_test_objects();
 
         sync.alarm_states.write().await.insert(
             String::from("MyDevice"),
@@ -550,8 +443,8 @@ mod test {
         };
 
         TestInstance::check_that(sync)
-            .with(message)
-            .meets(async || {
+            .when(sender, message)
+            .satisfies(async || {
                 logs_contain(
                     "Received acknowledgement command from Phoebus for device 'MyDevice', but it is already acknowledged. Doing nothing.",
                 )
@@ -562,8 +455,7 @@ mod test {
 
     #[tokio::test]
     async fn should_sync_valid_bypass_config() {
-        let sync_with_none: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync_with_none, sender) = get_test_objects();
 
         let sync_with_false = SyncImpl {
             alarm_states: Arc::clone(&sync_with_none.alarm_states),
@@ -594,8 +486,8 @@ mod test {
         };
 
         TestInstance::check_that(sync_with_none)
-            .with(message)
-            .meets(async || {
+            .when(sender, message)
+            .satisfies(async || {
                 alarm_states
                     .read()
                     .await
@@ -627,9 +519,11 @@ mod test {
             },
         );
 
+        let sender = get_sender(&sync_with_false);
+
         TestInstance::check_that(sync_with_false)
-            .with(message)
-            .meets(async || {
+            .when(sender, message)
+            .satisfies(async || {
                 alarm_states
                     .read()
                     .await
@@ -642,8 +536,7 @@ mod test {
 
     #[tokio::test]
     async fn should_sync_valid_snooze_config() {
-        let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync, sender) = get_test_objects();
 
         let alarm_states = Arc::clone(&sync.alarm_states);
 
@@ -667,8 +560,8 @@ mod test {
         };
 
         TestInstance::check_that(sync)
-            .with(message)
-            .meets(async || {
+            .when(sender, message)
+            .satisfies(async || {
                 alarm_states
                     .read()
                     .await
@@ -683,8 +576,7 @@ mod test {
 
     #[tokio::test]
     async fn should_sync_valid_active_config() {
-        let sync_with_time: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync_with_time, sender) = get_test_objects();
 
         let sync_with_true = SyncImpl {
             alarm_states: Arc::clone(&sync_with_time.alarm_states),
@@ -713,8 +605,8 @@ mod test {
         };
 
         TestInstance::check_that(sync_with_time)
-            .with(message)
-            .meets(async || {
+            .when(sender, message)
+            .satisfies(async || {
                 alarm_states
                     .read()
                     .await
@@ -738,12 +630,14 @@ mod test {
         );
         config.enabled = None;
 
+        let sender = get_sender(&sync_with_true);
+
         // Tests when there's no previous config cached - defaults to an inactive state
         sync_with_true.pv_metadata.write().await.remove("MyDevice");
 
         TestInstance::check_that(sync_with_true)
-            .with(message)
-            .meets(async || {
+            .when(sender, message)
+            .satisfies(async || {
                 alarm_states
                     .read()
                     .await
@@ -757,15 +651,14 @@ mod test {
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn should_not_sync_corrupted_config() {
-        let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync, sender) = get_test_objects();
         let message = Message {
             key: Some(String::from("config:path/to/MyDevice")),
             value: String::from("{ \"notRealConfigMessage\": \"Should not parse\" }"),
         };
         TestInstance::check_that(sync)
-            .with(message)
-            .meets(async || logs_contain("Failed to deserialize Phoebus config"))
+            .when(sender, message)
+            .satisfies(async || logs_contain("Failed to deserialize Phoebus config"))
             .await
             .expect("The expected log message was not detected.");
     }
@@ -773,8 +666,7 @@ mod test {
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn should_not_sync_duplicated_config() {
-        let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync, sender) = get_test_objects();
 
         let config = Config::default();
 
@@ -792,8 +684,8 @@ mod test {
             value: serde_json::to_string(&config).unwrap(),
         };
         TestInstance::check_that(sync)
-            .with(message)
-            .meets(async || logs_contain("Received config from Phoebus for device 'MyDevice' that matches the cached config. Doing nothing."))
+            .when(sender, message)
+            .satisfies(async || logs_contain("Received config from Phoebus for device 'MyDevice' that matches the cached config. Doing nothing."))
             .await
             .expect("The expected log message was not detected.");
     }
@@ -801,8 +693,7 @@ mod test {
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn should_not_sync_unexpected_enabled_states() {
-        let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync, sender) = get_test_objects();
 
         let mut config = Config::default();
 
@@ -822,8 +713,8 @@ mod test {
             value: serde_json::to_string(&config).unwrap(),
         };
         TestInstance::check_that(sync)
-            .with(message)
-            .meets(async || logs_contain("Could not parse the enabled state of a Phoebus config message to either a date or a bool."))
+            .when(sender, message)
+            .satisfies(async || logs_contain("Could not parse the enabled state of a Phoebus config message to either a date or a bool."))
             .await
             .expect("The expected log message was not detected.");
     }
@@ -831,8 +722,7 @@ mod test {
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn should_not_sync_already_active_config() {
-        let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync, sender) = get_test_objects();
 
         let mut config = Config::default();
 
@@ -859,8 +749,8 @@ mod test {
             value: serde_json::to_string(&config).unwrap(),
         };
         TestInstance::check_that(sync)
-            .with(message)
-            .meets(async || logs_contain("Received configuration update from Phoebus to activate alarm for device 'MyDevice', but it is already active. Updating cached config only."))
+            .when(sender, message)
+            .satisfies(async || logs_contain("Received configuration update from Phoebus to activate alarm for device 'MyDevice', but it is already active. Updating cached config only."))
             .await
             .expect("The expected log message was not detected.");
     }
@@ -868,8 +758,7 @@ mod test {
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn should_not_sync_already_bypassed_config() {
-        let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync, sender) = get_test_objects();
 
         let mut config = Config::default();
         config.enabled = Some(true.to_string());
@@ -897,8 +786,8 @@ mod test {
             value: serde_json::to_string(&config).unwrap(),
         };
         TestInstance::check_that(sync)
-            .with(message)
-            .meets(async || logs_contain("Received configuration update from Phoebus to bypass alarm for device 'MyDevice', but it is already bypassed. Updating cached PV config only."))
+            .when(sender, message)
+            .satisfies(async || logs_contain("Received configuration update from Phoebus to bypass alarm for device 'MyDevice', but it is already bypassed. Updating cached PV config only."))
             .await
             .expect("The expected log message was not detected.");
     }
@@ -906,15 +795,14 @@ mod test {
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn should_not_sync_unknown_operations() {
-        let sync: SyncImpl<TestSubscriber> =
-            Synchronizer::<TestPublisher, TestSubscriber>::new(get_demo_sync_config());
+        let (sync, sender) = get_test_objects();
         let message = Message {
             key: Some(String::from("some-other-command:path/to/MyDevice")),
             value: String::new(),
         };
         TestInstance::check_that(sync)
-            .with(message)
-            .meets(async || {
+            .when(sender, message)
+            .satisfies(async || {
                 logs_contain(
                     "Received Phoebus message that is not a config or a command. Doing nothing.",
                 )

@@ -35,19 +35,21 @@ impl<P: Publisher, S: Subscriber> SyncImpl<P, S> {
                 return;
             }
         };
-        let pv_metadata = match self
+
+        let pv_metadata_opt = self
             .pv_metadata
             .read()
             .await
             .get(&controls_alarm.device)
-            .cloned() // Get our own copy so we can drop the reference to the shared cache
-        {
+            .cloned(); // Get our own copy so we can drop the reference to the shared cache
+        let pv_metadata = match pv_metadata_opt {
             Some(metadata) => metadata,
             None => {
                 handle_missing_metadata(controls_alarm);
                 return;
             }
         };
+
         let state_opt = self
             .alarms_states
             .read()
@@ -184,5 +186,253 @@ fn handle_missing_metadata(status: Status) {
             "Received message for ACNET device '{}'. Doing nothing.",
             status.device
         ),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::{
+        models::phoebus::{Config, PvMetadata},
+        utils::testing::{TestInstance, TestPublisher, TestSubscriber, get_mock_sync_config},
+    };
+    use tokio::sync::broadcast::{Receiver, Sender};
+
+    fn get_sender(sync: &SyncImpl<TestPublisher, TestSubscriber>) -> Sender<Message> {
+        sync.controls.sender.clone()
+    }
+
+    fn get_receivers(
+        sync: &SyncImpl<TestPublisher, TestSubscriber>,
+    ) -> HashMap<String, Receiver<Message>> {
+        sync.phoebus_publishers
+            .iter()
+            .map(|(topic, publisher)| (topic.clone(), publisher.get_receiver()))
+            .collect()
+    }
+
+    fn get_test_objects() -> (
+        SyncImpl<TestPublisher, TestSubscriber>,
+        Sender<Message>,
+        HashMap<String, Receiver<Message>>,
+    ) {
+        let sync = SyncImpl::new(get_mock_sync_config());
+        let sender = get_sender(&sync);
+        let receivers = get_receivers(&sync);
+        (sync, sender, receivers)
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn should_not_sync_corrupted_controls_message() {
+        let (sync, sender, _) = get_test_objects();
+        let message = Message {
+            key: None,
+            value: String::from("{ \"unknownKey\": \"Malformed message\" }"),
+        };
+
+        TestInstance::check_that(sync)
+            .when(sender, message)
+            .satisfies(async || logs_contain("Failed to deserialize Controls message value"))
+            .await
+            .expect("Did not detect expected log message.");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn should_not_sync_acnet_device() {
+        let (sync, sender, _) = get_test_objects();
+
+        let mut status = Status::default();
+        status.set_source(Source::Analog);
+
+        let message = Message {
+            key: None,
+            value: serde_json::to_string(&status).unwrap(),
+        };
+
+        TestInstance::check_that(sync)
+            .when(sender, message)
+            .satisfies(async || logs_contain("Received message for ACNET device"))
+            .await
+            .expect("Did not detect expected log message.");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn should_not_sync_unknown_device() {
+        let (sync, sender, _) = get_test_objects();
+
+        let status = Status::default();
+        let message = Message {
+            key: None,
+            value: serde_json::to_string(&status).unwrap(),
+        };
+
+        TestInstance::check_that(sync)
+            .when(sender, message)
+            .satisfies(async || logs_contain("Received message for device '' with unknown source and no matching PV metadata."))
+            .await
+            .expect("Did not detect expected log message.");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn should_not_sync_unmapped_epics_pv() {
+        let (sync, sender, _) = get_test_objects();
+
+        let mut status = Status::default();
+        status.set_source(Source::Epics);
+        let message = Message {
+            key: None,
+            value: serde_json::to_string(&status).unwrap(),
+        };
+
+        TestInstance::check_that(sync)
+            .when(sender, message)
+            .satisfies(async || {
+                logs_contain("Received message for EPICS device '' with no matching PV metadata.")
+            })
+            .await
+            .expect("Did not detect expected log message.");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn should_not_sync_when_no_cached_alarm_state() {
+        let (sync, sender, _) = get_test_objects();
+
+        sync.pv_metadata.write().await.insert(
+            String::new(),
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::new(),
+                phoebus_topic: String::new(),
+            },
+        );
+
+        let mut status = Status::default();
+        status.set_source(Source::Epics);
+        let message = Message {
+            key: None,
+            value: serde_json::to_string(&status).unwrap(),
+        };
+
+        TestInstance::check_that(sync)
+            .when(sender, message)
+            .satisfies(async || {
+                logs_contain("No cached alarm state for device . Caching state and doing nothing.")
+            })
+            .await
+            .expect("Did not detect expected log message.");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn should_not_sync_when_no_change_in_alarm_state() {
+        let (sync, sender, _) = get_test_objects();
+
+        sync.pv_metadata.write().await.insert(
+            String::new(),
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::new(),
+                phoebus_topic: String::new(),
+            },
+        );
+
+        let mut status = Status::default();
+        status.set_source(Source::Epics);
+        let message = Message {
+            key: None,
+            value: serde_json::to_string(&status).unwrap(),
+        };
+
+        sync.alarms_states
+            .write()
+            .await
+            .insert(String::new(), status.into());
+
+        TestInstance::check_that(sync)
+            .when(sender, message)
+            .satisfies(async || {
+                logs_contain("Received alarm update for device  with unchanged state CachedState { state: Unknown, wake: None }. Doing nothing.")
+            })
+            .await
+            .expect("Did not detect expected log message.");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn should_not_sync_when_alarm_state_is_not_syncable() {
+        let (sync, sender, _) = get_test_objects();
+
+        sync.pv_metadata.write().await.insert(
+            String::new(),
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::new(),
+                phoebus_topic: String::new(),
+            },
+        );
+
+        let mut status = Status::default();
+        status.set_source(Source::Epics);
+
+        sync.alarms_states
+            .write()
+            .await
+            .insert(String::new(), status.clone().into());
+
+        status.set_state(State::Ok);
+        let message = Message {
+            key: None,
+            value: serde_json::to_string(&status).unwrap(),
+        };
+
+        TestInstance::check_that(sync)
+            .when(sender, message)
+            .satisfies(async || {
+                logs_contain("Received Controls alarm update for device  with new state Ok that does not require synchronization. Updating cache and doing nothing.")
+            })
+            .await
+            .expect("Did not detect expected log message.");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn should_not_sync_when_no_publisher_for_topic() {
+        let (sync, sender, _) = get_test_objects();
+
+        sync.pv_metadata.write().await.insert(
+            String::new(),
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::new(),
+                phoebus_topic: String::new(),
+            },
+        );
+
+        let mut status = Status::default();
+        status.set_source(Source::Epics);
+
+        sync.alarms_states
+            .write()
+            .await
+            .insert(String::new(), status.clone().into());
+
+        status.set_state(State::Acknowledged);
+        let message = Message {
+            key: None,
+            value: serde_json::to_string(&status).unwrap(),
+        };
+
+        TestInstance::check_that(sync)
+            .when(sender, message)
+            .satisfies(async || {
+                logs_contain("Received message for device with no matching Phoebus topic.")
+            })
+            .await
+            .expect("Did not detect expected log message.");
     }
 }

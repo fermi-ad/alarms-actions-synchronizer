@@ -48,12 +48,14 @@ fn create_synchronizer_config() -> SynchronizerConfig {
     SynchronizerConfig::new(controls_host, controls_topic, phoebus_host, phoebus_topics)
 }
 
+/// Convenience method for kicking off the Controls-to-Phoebus synchronizer
 fn begin_controls_sync(sync_config: SynchronizerConfig) -> JoinHandle<()> {
     begin_sync::<KafkaPublisher, KafkaSubscriber, controls::SyncImpl<KafkaPublisher, KafkaSubscriber>>(
         sync_config,
     )
 }
 
+/// Convenience method for kicking off the Phoebus-to-Controls synchronizer
 fn begin_phoebus_sync(sync_config: SynchronizerConfig) -> JoinHandle<()> {
     begin_sync::<KafkaPublisher, KafkaSubscriber, phoebus::SyncImpl<KafkaSubscriber>>(sync_config)
 }
