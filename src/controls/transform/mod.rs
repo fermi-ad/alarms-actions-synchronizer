@@ -1,3 +1,8 @@
+//! Transform Module
+//!
+//! Contains various helper methods for transforming a Controls [`Status`] into an
+//! appropriate [`Message`] for Phoebus.
+
 use crate::{
     models::{
         ACK_COMMAND,
@@ -9,27 +14,11 @@ use crate::{
 use chrono::{TimeZone, Utc};
 use rust_pubsub_lib::Message;
 
+/// The host name to report to Phoebus when sending messages from the Sync service.
 const CONTROLS_HOST: &str = "Flutter Alarms App";
 
+/// Converts the provided values into a [`Message`] for Phoebus.
 pub fn controls_to_phoebus(
-    controls_alarm: &Status,
-    operation: Operation,
-    metadata: &PvMetadata,
-) -> Result<(String, Message), String> {
-    let topic = match operation {
-        Operation::Command => get_command_topic(&metadata.phoebus_topic),
-        Operation::Config => metadata.phoebus_topic.clone(),
-        _ => return Err(Operation::get_err_string_for_other()),
-    };
-    let phoebus_message = transform(controls_alarm, operation, metadata)?;
-    Ok((topic, phoebus_message))
-}
-
-fn get_phoebus_key(operation: &Operation, display_path: &String, device: &String) -> String {
-    format!("{}:{}/{}", operation.get_key_prefix(), display_path, device)
-}
-
-fn transform(
     controls_alarm: &Status,
     operation: Operation,
     metadata: &PvMetadata,
@@ -61,6 +50,30 @@ fn transform(
     })
 }
 
+/// Determines the appropriate Phoebus topic based on the [`Operation`] and cached [`PvMetadata`].
+pub fn get_topic_for_operation(operation: &Operation, metadata: &PvMetadata) -> Option<String> {
+    match operation {
+        Operation::Command => Some(get_command_topic(&metadata.phoebus_topic)),
+        Operation::Config => Some(metadata.phoebus_topic.clone()),
+        _ => None,
+    }
+}
+
+/// Determines the correct [`Operation`] for a given [`State`].
+pub fn state_to_operation(alarm_state: State) -> Operation {
+    match alarm_state {
+        State::Acknowledged => Operation::Command,
+        State::Bypassed => Operation::Config,
+        _ => Operation::Other,
+    }
+}
+
+/// Generates the [`key`](Message::key) for the Phoebus [`Message`].
+fn get_phoebus_key(operation: &Operation, display_path: &String, device: &String) -> String {
+    format!("{}:{}/{}", operation.get_key_prefix(), display_path, device)
+}
+
+/// Determines the [`String`] to use when populating the [`enabled`](Config::enabled) field of a Phoebus [`Config`] record.
 fn get_enabled_string(controls_alarm: &Status) -> String {
     if controls_alarm.state() == State::Bypassed {
         match controls_alarm
@@ -90,9 +103,7 @@ mod test {
             phoebus_topic: String::new(),
         };
 
-        let (result_topic, result_message) =
-            controls_to_phoebus(&status, Operation::Command, &metadata).unwrap();
-        assert_eq!(result_topic, "Command");
+        let result_message = controls_to_phoebus(&status, Operation::Command, &metadata).unwrap();
         assert_eq!(result_message.key, Some(String::from("command:/")));
         assert_eq!(
             result_message.value,
@@ -114,9 +125,7 @@ mod test {
             phoebus_topic: String::new(),
         };
 
-        let (result_topic, result_message) =
-            controls_to_phoebus(&status, Operation::Config, &metadata).unwrap();
-        assert!(result_topic.is_empty());
+        let result_message = controls_to_phoebus(&status, Operation::Config, &metadata).unwrap();
         assert_eq!(result_message.key, Some(String::from("config:/")));
         assert_eq!(
             result_message.value,
@@ -151,7 +160,7 @@ mod test {
             phoebus_topic: String::new(),
         };
 
-        let result = transform(&status, Operation::Other, &metadata).unwrap_err();
+        let result = controls_to_phoebus(&status, Operation::Other, &metadata).unwrap_err();
         assert_eq!(result, Operation::get_err_string_for_other());
     }
 

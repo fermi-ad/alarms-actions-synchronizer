@@ -26,7 +26,7 @@ pub struct SyncImpl<S: Subscriber> {
     _controls: (), // TODO: Swap this out with the gRPC service for talking to the Controls alarms app when it becomes available.
 
     /// The map of [`Subscriber`] instances and their associated topics in the Phoebus Kafka.
-    phoebus: HashMap<String, S>,
+    phoebus_subscribers: HashMap<String, S>,
 
     /// The atomic cache of PV metadata.
     pv_metadata: PvCache,
@@ -36,7 +36,7 @@ impl<S: Subscriber> SyncImpl<S> {
     fn generate_stream_map(
         &self,
     ) -> StreamMap<String, StreamNotifyClose<BroadcastStream<Message>>> {
-        self.phoebus
+        self.phoebus_subscribers
             .iter()
             .map(|(topic, sub)| (topic.clone(), StreamNotifyClose::new(sub.get_stream())))
             .collect::<StreamMap<_, _>>()
@@ -219,7 +219,7 @@ impl<S: Subscriber> SyncImpl<S> {
     }
 
     /// The primary logic for handling a new message from Phoebus.
-    /// Disambiguates the type of message and hands it off to the appropriate method.
+    /// Disambiguates the type of message and hands it off to the appropriate helper method.
     async fn process_message(&self, topic: &str, msg: Message) {
         if msg.key.is_none() {
             error!(
@@ -248,7 +248,7 @@ impl<P: Publisher, S: Subscriber + Send + Sync> Synchronizer<P, S> for SyncImpl<
         SyncImpl {
             alarm_states: config.alarm_states,
             _controls: (),
-            phoebus: config
+            phoebus_subscribers: config
                 .phoebus_topics
                 .into_iter()
                 .flat_map(|topic| {
@@ -279,8 +279,9 @@ impl<P: Publisher, S: Subscriber + Send + Sync> Synchronizer<P, S> for SyncImpl<
             let (topic, msg_opt) = stream_opt.unwrap();
             if msg_opt.is_none() {
                 // One of the streams closed itself. Regenerate the stream.
-                let new_stream =
-                    StreamNotifyClose::new(self.phoebus.get(&topic).unwrap().get_stream());
+                let new_stream = StreamNotifyClose::new(
+                    self.phoebus_subscribers.get(&topic).unwrap().get_stream(),
+                );
                 stream_map.insert(topic, new_stream);
                 continue;
             }
@@ -309,7 +310,11 @@ mod test {
     use tokio::sync::broadcast::Sender;
 
     fn get_sender(sync: &SyncImpl<TestSubscriber>) -> Sender<Message> {
-        sync.phoebus.get("testTopicCommand").unwrap().sender.clone()
+        sync.phoebus_subscribers
+            .get("testTopicCommand")
+            .unwrap()
+            .sender
+            .clone()
     }
 
     fn get_test_objects() -> (SyncImpl<TestSubscriber>, Sender<Message>) {
@@ -324,8 +329,8 @@ mod test {
         let sync: SyncImpl<TestSubscriber> =
             Synchronizer::<TestPublisher, TestSubscriber>::new(get_mock_sync_config());
         assert_eq!((), sync._controls);
-        assert!(sync.phoebus.contains_key("testTopic"));
-        assert!(sync.phoebus.contains_key("testTopicCommand"));
+        assert!(sync.phoebus_subscribers.contains_key("testTopic"));
+        assert!(sync.phoebus_subscribers.contains_key("testTopicCommand"));
     }
 
     #[tokio::test]
@@ -460,7 +465,7 @@ mod test {
         let sync_with_false = SyncImpl {
             alarm_states: Arc::clone(&sync_with_none.alarm_states),
             _controls: (),
-            phoebus: sync_with_none.phoebus.clone(),
+            phoebus_subscribers: sync_with_none.phoebus_subscribers.clone(),
             pv_metadata: Arc::clone(&sync_with_none.pv_metadata),
         };
 
@@ -581,7 +586,7 @@ mod test {
         let sync_with_true = SyncImpl {
             alarm_states: Arc::clone(&sync_with_time.alarm_states),
             _controls: (),
-            phoebus: sync_with_time.phoebus.clone(),
+            phoebus_subscribers: sync_with_time.phoebus_subscribers.clone(),
             pv_metadata: Arc::clone(&sync_with_time.pv_metadata),
         };
 
