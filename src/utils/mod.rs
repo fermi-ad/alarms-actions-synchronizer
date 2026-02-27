@@ -113,7 +113,7 @@ pub mod testing {
             self
         }
 
-        pub async fn satisfies(self, condition: impl AsyncFn() -> bool) -> Result<(), ()> {
+        pub async fn satisfies(self, condition: impl AsyncFnMut() -> bool) -> Result<(), ()> {
             do_test(
                 self.sync,
                 self.sender.unwrap(),
@@ -128,7 +128,7 @@ pub mod testing {
         mut sync: T,
         sender: Sender<Message>,
         message: Message,
-        condition: impl AsyncFn() -> bool,
+        condition: impl AsyncFnMut() -> bool,
     ) -> Result<(), ()> {
         // Asynchronously kick off the synchronizer in a separate task
         let handle = tokio::spawn(async move {
@@ -157,7 +157,7 @@ pub mod testing {
         panic!("The sync service did not start");
     }
 
-    async fn wait_for_condition(condition: impl AsyncFn() -> bool) -> bool {
+    async fn wait_for_condition(mut condition: impl AsyncFnMut() -> bool) -> bool {
         for _ in 0..10 {
             if condition().await {
                 return true;

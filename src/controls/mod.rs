@@ -193,10 +193,17 @@ fn handle_missing_metadata(status: Status) {
 mod test {
     use super::*;
     use crate::{
-        models::phoebus::{Config, PvMetadata},
+        models::{
+            ACK_COMMAND,
+            phoebus::{Command, Config, PvMetadata},
+        },
         utils::testing::{TestInstance, TestPublisher, TestSubscriber, get_mock_sync_config},
     };
-    use tokio::sync::broadcast::{Receiver, Sender};
+    use std::time::Duration;
+    use tokio::{
+        sync::broadcast::{Receiver, Sender},
+        time::timeout,
+    };
 
     fn get_sender(sync: &SyncImpl<TestPublisher, TestSubscriber>) -> Sender<Message> {
         sync.controls.sender.clone()
@@ -434,5 +441,111 @@ mod test {
             })
             .await
             .expect("Did not detect expected log message.");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn should_sync_valid_acknowledge_message() {
+        let (sync, sender, mut receiver) = get_test_objects();
+
+        sync.pv_metadata.write().await.insert(
+            String::new(),
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::new(),
+                phoebus_topic: String::from("testTopic"),
+            },
+        );
+
+        let mut status = Status::default();
+        status.set_source(Source::Epics);
+
+        sync.alarms_states
+            .write()
+            .await
+            .insert(String::new(), status.clone().into());
+
+        status.set_state(State::Acknowledged);
+        let message = Message {
+            key: None,
+            value: serde_json::to_string(&status).unwrap(),
+        };
+
+        let mut expected_command = Command::default();
+        expected_command.command = ACK_COMMAND.to_string();
+        expected_command.host = "Flutter Alarms App".to_string();
+
+        let expected_key = Some(String::from("command:/"));
+        let expected_value = serde_json::to_string(&expected_command).unwrap();
+
+        TestInstance::check_that(sync)
+            .when(sender, message)
+            .satisfies(async move || {
+                timeout(
+                    Duration::from_secs(1),
+                    receiver.get_mut("testTopicCommand").unwrap().recv(),
+                )
+                .await
+                .unwrap()
+                .is_ok_and(|received| {
+                    debug!("{received:?}");
+                    received.key == expected_key && received.value == expected_value
+                })
+            })
+            .await
+            .expect("Expected message was not delivered to the expected Publisher");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn should_sync_valid_bypass_message() {
+        let (sync, sender, mut receiver) = get_test_objects();
+
+        sync.pv_metadata.write().await.insert(
+            String::new(),
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::new(),
+                phoebus_topic: String::from("testTopic"),
+            },
+        );
+
+        let mut status = Status::default();
+        status.set_source(Source::Epics);
+
+        sync.alarms_states
+            .write()
+            .await
+            .insert(String::new(), status.clone().into());
+
+        status.set_state(State::Bypassed);
+        let message = Message {
+            key: None,
+            value: serde_json::to_string(&status).unwrap(),
+        };
+
+        let mut expected_config = Config::default();
+        expected_config.enabled = Some(false.to_string());
+        expected_config.host = "Flutter Alarms App".to_string();
+
+        let expected_key = Some(String::from("config:/"));
+        let expected_value = serde_json::to_string(&expected_config).unwrap();
+
+        TestInstance::check_that(sync)
+            .when(sender, message)
+            .satisfies(async move || {
+                timeout(
+                    Duration::from_secs(1),
+                    receiver.get_mut("testTopic").unwrap().recv(),
+                )
+                .await
+                .unwrap()
+                .is_ok_and(|received| {
+                    debug!("{received:?}");
+                    received.key == expected_key && received.value == expected_value
+                })
+            })
+            .await
+            .expect("Expected message was not delivered to the expected Publisher");
     }
 }

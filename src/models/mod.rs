@@ -25,7 +25,7 @@ pub mod phoebus {
     /// A struct representing a message from the Command topic.
     ///
     /// Used in the Phoebus context to acknowledge alarms.
-    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct Command {
         /// The user issuing the command.
         pub user: String,
@@ -42,7 +42,7 @@ pub mod phoebus {
     /// Used in the Phoebus context to enable, bypass, and snooze alarms.
     ///
     /// A field set to [`None`] indicates `false`, or that the field should be ignored.
-    #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct Config {
         /// The user setting the new configuration.
         pub user: String,
