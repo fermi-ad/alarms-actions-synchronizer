@@ -139,6 +139,21 @@ mod test {
     }
 
     #[test]
+    fn should_return_none_when_operation_is_other() {
+        assert_eq!(
+            get_topic_for_operation(
+                &Operation::Other,
+                &PvMetadata {
+                    config: Config::default(),
+                    display_path: String::default(),
+                    phoebus_topic: String::default()
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn should_not_convert_when_not_config_or_command() {
         let status = Status::default();
         let metadata = PvMetadata {

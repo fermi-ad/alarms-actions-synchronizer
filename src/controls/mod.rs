@@ -94,7 +94,7 @@ impl<P: Publisher, S: Subscriber> SyncImpl<P, S> {
             }
         };
 
-        let message = match transform::controls_to_phoebus(&controls_alarm, operation, &pv_metadata)
+        let message = match transform::controls_to_phoebus(controls_alarm, operation, &pv_metadata)
         {
             Ok(message) => message,
             Err(err) => {
