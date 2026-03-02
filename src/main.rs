@@ -4,11 +4,14 @@
 
 use models::{Synchronizer, SynchronizerConfig};
 use rust_pubsub_lib::{
-    Publisher, Subscriber,
-    kafka_impl::{KafkaPublisher, KafkaSubscriber},
+    Publisher, Snapshot, Subscriber,
+    kafka_impl::{KafkaPublisher, KafkaSnapshot, KafkaSubscriber},
 };
 use std::env;
-use tokio::task::JoinHandle;
+use tokio::{
+    task::{JoinError, JoinHandle},
+    try_join,
+};
 use tracing_subscriber::{Registry, filter::EnvFilter, fmt::layer, layer::SubscriberExt};
 
 mod controls;
@@ -18,15 +21,14 @@ mod utils;
 
 /// The entrypoint into the application, this method sets everything in motion.
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), JoinError> {
     setup_logging();
 
     let sync_config = create_synchronizer_config();
 
     let phoebus_handle = begin_phoebus_sync(sync_config.clone());
     let controls_handle = begin_controls_sync(sync_config);
-    let _ = controls_handle.await;
-    let _ = phoebus_handle.await;
+    try_join!(phoebus_handle, controls_handle).map(|_| ())
 }
 
 /// Generates an instance of [`SynchronizerConfig`] from the environment variables.
@@ -50,25 +52,30 @@ fn create_synchronizer_config() -> SynchronizerConfig {
 
 /// Convenience method for kicking off the Controls-to-Phoebus synchronizer
 fn begin_controls_sync(sync_config: SynchronizerConfig) -> JoinHandle<()> {
-    begin_sync::<KafkaPublisher, KafkaSubscriber, controls::SyncImpl<KafkaPublisher, KafkaSubscriber>>(
-        sync_config,
-    )
+    begin_sync::<
+        KafkaPublisher,
+        KafkaSnapshot,
+        KafkaSubscriber,
+        controls::SyncImpl<KafkaPublisher, KafkaSubscriber>,
+    >(sync_config)
 }
 
 /// Convenience method for kicking off the Phoebus-to-Controls synchronizer
 fn begin_phoebus_sync(sync_config: SynchronizerConfig) -> JoinHandle<()> {
-    begin_sync::<KafkaPublisher, KafkaSubscriber, phoebus::SyncImpl<KafkaSubscriber>>(sync_config)
+    begin_sync::<KafkaPublisher, KafkaSnapshot, KafkaSubscriber, phoebus::SyncImpl<KafkaSubscriber>>(
+        sync_config,
+    )
 }
 
 /// Spawns a new Tokio task containing a running instance of the configured [`Synchronizer`] type.
 ///
 /// This allows the sync operations to run concurrently.
-fn begin_sync<P: Publisher, S: Subscriber, T: Synchronizer<P, S> + Send + Sync>(
+fn begin_sync<P: Publisher, SNAP: Snapshot, S: Subscriber, T: Synchronizer<P, S> + Send + Sync>(
     sync_config: SynchronizerConfig,
 ) -> JoinHandle<()> {
     tokio::spawn(async {
         let mut synchronizer = T::new(sync_config);
-        synchronizer.synchronize().await
+        synchronizer.synchronize::<SNAP>().await
     })
 }
 
@@ -92,6 +99,47 @@ fn setup_logging() {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::utils::testing::get_mock_sync_config;
+    use rust_pubsub_lib::{Message, PubSubError};
+    use tokio_stream::wrappers::BroadcastStream;
+
+    #[derive(Debug)]
+    struct MockPubSub;
+    impl Publisher for MockPubSub {
+        fn new(_: String, _: String) -> Self {
+            unimplemented!()
+        }
+
+        fn publish(&mut self, _: Message) -> Result<(), PubSubError> {
+            unimplemented!()
+        }
+    }
+    impl Snapshot for MockPubSub {
+        fn get(_: String, _: String) -> Result<Vec<Message>, PubSubError> {
+            unimplemented!()
+        }
+    }
+    impl Subscriber for MockPubSub {
+        fn new(_: String, _: String) -> Self {
+            unimplemented!()
+        }
+
+        fn get_stream(&self) -> BroadcastStream<Message> {
+            unimplemented!()
+        }
+    }
+
+    struct MockSync;
+    #[async_trait::async_trait]
+    impl Synchronizer<MockPubSub, MockPubSub> for MockSync {
+        fn new(_: SynchronizerConfig) -> Self {
+            MockSync
+        }
+
+        async fn synchronize<SNAP: Snapshot>(&mut self) {
+            // Do nothing
+        }
+    }
 
     #[test]
     fn should_create_sync_config() {
@@ -108,5 +156,12 @@ mod test {
     fn should_setup_logging() {
         // Panics due to the tracing-test library already setting a global default
         setup_logging();
+    }
+
+    #[tokio::test]
+    async fn should_begin_sync() {
+        let handle =
+            begin_sync::<MockPubSub, MockPubSub, MockPubSub, MockSync>(get_mock_sync_config());
+        assert_eq!((), handle.await.unwrap());
     }
 }

@@ -6,16 +6,17 @@ use crate::{
     models::{
         ACK_COMMAND, AlarmStateCache, CachedState, PvCache, Synchronizer, SynchronizerConfig,
         alarm::status::State,
-        generated::Timestamp,
         phoebus::{Command, Config, Key, Operation, PvMetadata},
     },
     utils::get_command_topic,
 };
-use chrono::{DateTime, Utc};
-use rust_pubsub_lib::{Message, Publisher, Subscriber};
+use init::get_existing_messages_from_phoebus;
+use rust_pubsub_lib::{Message, Publisher, Snapshot, Subscriber};
 use std::collections::HashMap;
 use tokio_stream::{StreamExt, StreamMap, StreamNotifyClose, wrappers::BroadcastStream};
 use tracing::{debug, error, info, warn};
+
+mod init;
 
 /// Implementation of [`Synchronizer`] for pushing Phoebus commands and configs into the Controls alarm service.
 pub struct SyncImpl<S: Subscriber> {
@@ -24,6 +25,9 @@ pub struct SyncImpl<S: Subscriber> {
 
     /// The client for passing alarms info to the Controls alarms service.
     _controls: (), // TODO: Swap this out with the gRPC service for talking to the Controls alarms app when it becomes available.
+
+    /// The location of the Phoebus alarms topics. Used during inital startup of the sync operation.
+    phoebus_host: String,
 
     /// The map of [`Subscriber`] instances and their associated topics in the Phoebus Kafka.
     phoebus_subscribers: HashMap<String, S>,
@@ -54,64 +58,57 @@ impl<S: Subscriber> SyncImpl<S> {
     }
 
     /// Handles when a config came in from Phoebus to activate a bypassed alarm.
-    async fn handle_active_alarm(&self, key: &Key) {
-        let cached_state = self.alarm_states.read().await.get(&key.device).cloned();
+    async fn handle_active_alarm(&self, device: &str, updated_state: CachedState) {
+        let cached_state = self.alarm_states.read().await.get(device).cloned();
         if let Some(state) = cached_state
             && state.state != State::Bypassed
         {
             info!(
                 "Received configuration update from Phoebus to activate alarm for device '{}', but it is already active. Updating cached config only.",
-                key.device
+                device
             );
             return;
         }
         info!(
             "TODO: Update the alarms serivce with an Ok condition for device '{}'",
-            key.device
+            device
         );
-        self.alarm_states.write().await.insert(
-            key.device.clone(),
-            CachedState {
-                state: State::Ok,
-                wake: None,
-            },
-        );
+        self.alarm_states
+            .write()
+            .await
+            .insert(device.to_owned(), updated_state);
     }
 
     /// Handles when a config came in from Phoebus to bypass an active alarm.
-    async fn handle_bypassed_alarm(&self, key: &Key, wake: Option<Timestamp>) {
-        let cached_state = self.alarm_states.read().await.get(&key.device).cloned();
+    async fn handle_bypassed_alarm(&self, device: &str, updated_state: CachedState) {
+        let cached_state = self.alarm_states.read().await.get(device).cloned();
         if let Some(state) = cached_state
-            && state.state == State::Bypassed
-            && state.wake == wake
+            && state == updated_state
         {
             info!(
                 "Received configuration update from Phoebus to bypass alarm for device '{}', but it is already bypassed. Updating cached PV config only.",
-                key.device
+                device
             );
             return;
         }
-        match wake {
+        match updated_state.wake {
             Some(time) => {
                 info!(
                     "TODO: Update the alarms serivce with a Snoozed condition for device '{}' with wake time '{:?}'",
-                    key.device, time
+                    device, time
                 );
             }
             None => {
                 info!(
                     "TODO: Update the alarms serivce with a Bypassed condition for device '{}'",
-                    key.device
+                    device
                 );
             }
         }
-        self.alarm_states.write().await.insert(
-            key.device.clone(),
-            CachedState {
-                state: State::Bypassed,
-                wake,
-            },
-        );
+        self.alarm_states
+            .write()
+            .await
+            .insert(device.to_owned(), updated_state);
     }
 
     /// Handles a Command message coming in from Phoebus.
@@ -173,40 +170,13 @@ impl<S: Subscriber> SyncImpl<S> {
             return;
         }
         if config_msg.enabled != cached_metadata.config.enabled {
-            match config_msg.enabled.as_ref() {
-                Some(enabled_str) => match DateTime::parse_from_rfc3339(enabled_str) {
-                    Ok(dt) => {
-                        if dt.timestamp_millis() > Utc::now().timestamp_millis() {
-                            self.handle_bypassed_alarm(
-                                &key,
-                                Some(Timestamp {
-                                    seconds: dt.timestamp(),
-                                    nanos: dt.timestamp_subsec_nanos() as i32,
-                                }),
-                            )
-                            .await;
-                        } else {
-                            self.handle_active_alarm(&key).await;
-                        }
-                    }
-                    Err(_) => {
-                        if let Ok(is_active) = enabled_str.parse::<bool>() {
-                            if is_active {
-                                self.handle_active_alarm(&key).await;
-                            } else {
-                                self.handle_bypassed_alarm(&key, None).await;
-                            }
-                        } else {
-                            error!(
-                                "Could not parse the enabled state of a Phoebus config message to either a date or a bool.\n Device: {}\n Config record: {:?}",
-                                key.device, config_msg
-                            );
-                        }
-                    }
-                },
-                None => {
-                    self.handle_bypassed_alarm(&key, None).await;
-                }
+            let updated_state = config_msg.as_cached_state();
+            if updated_state.state == State::Bypassed {
+                self.handle_bypassed_alarm(&key.device, updated_state).await;
+            } else if updated_state.state == State::Ok {
+                self.handle_active_alarm(&key.device, updated_state).await;
+            } else {
+                error!("Could not determine state of new config message: {config_msg:?}");
             }
         }
         self.pv_metadata.write().await.insert(
@@ -248,6 +218,7 @@ impl<P: Publisher, S: Subscriber + Send + Sync> Synchronizer<P, S> for SyncImpl<
         SyncImpl {
             alarm_states: config.alarm_states,
             _controls: (),
+            phoebus_host: config.phoebus_host.clone(),
             phoebus_subscribers: config
                 .phoebus_topics
                 .into_iter()
@@ -266,9 +237,16 @@ impl<P: Publisher, S: Subscriber + Send + Sync> Synchronizer<P, S> for SyncImpl<
         }
     }
 
-    async fn synchronize(&mut self) {
+    async fn synchronize<SNAP: Snapshot>(&mut self) {
         info!("Starting Phoebus-to-Controls Synchronizer");
         let mut stream_map = self.generate_stream_map();
+        get_existing_messages_from_phoebus::<SNAP>(
+            self.phoebus_host.clone(),
+            self.phoebus_subscribers.keys().cloned().collect(),
+            &self.alarm_states,
+            &self.pv_metadata,
+        )
+        .await;
         loop {
             let stream_opt = stream_map.next().await;
             if stream_opt.is_none() {
@@ -306,6 +284,7 @@ mod test {
     use crate::utils::testing::{
         TestInstance, TestPublisher, TestSubscriber, get_mock_sync_config,
     };
+    use chrono::Utc;
     use std::{sync::Arc, time::Duration};
     use tokio::sync::broadcast::Sender;
 
@@ -465,6 +444,7 @@ mod test {
         let sync_with_false = SyncImpl {
             alarm_states: Arc::clone(&sync_with_none.alarm_states),
             _controls: (),
+            phoebus_host: String::new(),
             phoebus_subscribers: sync_with_none.phoebus_subscribers.clone(),
             pv_metadata: Arc::clone(&sync_with_none.pv_metadata),
         };
@@ -586,6 +566,7 @@ mod test {
         let sync_with_true = SyncImpl {
             alarm_states: Arc::clone(&sync_with_time.alarm_states),
             _controls: (),
+            phoebus_host: String::new(),
             phoebus_subscribers: sync_with_time.phoebus_subscribers.clone(),
             pv_metadata: Arc::clone(&sync_with_time.pv_metadata),
         };

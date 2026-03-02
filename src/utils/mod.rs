@@ -27,13 +27,24 @@ pub mod testing {
     //! Utilities for use in other tests within this application.
 
     use crate::models::{Synchronizer, SynchronizerConfig};
-    use rust_pubsub_lib::{Message, PubSubError, Publisher, Subscriber};
+    use rust_pubsub_lib::{Message, PubSubError, Publisher, Snapshot, Subscriber};
     use std::{error::Error, time::Duration};
     use tokio::{
         sync::broadcast::{Receiver, Sender, channel},
         time::{sleep, timeout},
     };
     use tokio_stream::wrappers::BroadcastStream;
+
+    /// Implementation of [`Snapshot`] to use in tests.
+    ///
+    /// Always returns an empty vector. Used to short-circuit the initialization logic for the Phoebus synchronizer.
+    #[derive(Debug)]
+    struct TestSnapshot;
+    impl Snapshot for TestSnapshot {
+        fn get(_: String, _: String) -> Result<Vec<Message>, PubSubError> {
+            Ok(Vec::new())
+        }
+    }
 
     /// Implementation of [`Publisher`] with a method to get a stream of the messages that are "published" by this object.
     #[derive(Debug)]
@@ -146,7 +157,7 @@ pub mod testing {
     ) -> Result<(), Box<dyn Error>> {
         // Asynchronously kick off the synchronizer in a separate task
         let handle = tokio::spawn(async move {
-            sync.synchronize().await;
+            sync.synchronize::<TestSnapshot>().await;
         });
 
         wait_for_sync_to_start(&sender).await;
