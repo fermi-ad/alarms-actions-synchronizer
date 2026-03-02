@@ -4,9 +4,15 @@
 
 pub use common::alarm;
 pub use google::protobuf as generated;
-use rust_pubsub_lib::{Publisher, Subscriber};
+
+use alarm::status::State;
+use chrono::{DateTime, TimeZone, Utc};
+use generated::Timestamp;
+use rust_pubsub_lib::{Publisher, Snapshot, Subscriber};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
+
+pub mod phoebus;
 
 /// The command that will come in from/should be sent to Phoebus during an acknowledgement.
 pub const ACK_COMMAND: &str = "acknowledge";
@@ -17,143 +23,8 @@ pub type AlarmStateCache = Arc<RwLock<HashMap<String, CachedState>>>;
 /// Alias for the atomic cache of PV metadata shared between the two synchronizing processes.
 pub type PvCache = Arc<RwLock<HashMap<String, phoebus::PvMetadata>>>;
 
-pub mod phoebus {
-    //! Phoebus Module
-    //!
-    //! Contains data structures that are germane to the Phoebus environment.
-
-    /// A struct representing a message from the Command topic.
-    ///
-    /// Used in the Phoebus context to acknowledge alarms.
-    #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct Command {
-        /// The user issuing the command.
-        pub user: String,
-
-        /// The host where the command originated.
-        pub host: String,
-
-        /// The command itself.
-        pub command: String,
-    }
-
-    /// A struct representing a configuration message on the main Phoebus topic.
-    ///
-    /// Used in the Phoebus context to enable, bypass, and snooze alarms.
-    ///
-    /// A field set to [`None`] indicates `false`, or that the field should be ignored.
-    #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct Config {
-        /// The user setting the new configuration.
-        pub user: String,
-
-        /// The host the user is making the change from.
-        pub host: String,
-
-        /// The enabled state of the alarm.
-        ///
-        /// This is either a time or a boolean - represented as a string to handle the ambiguity. Thanks EPICS.
-        pub enabled: Option<String>,
-
-        // The remaining values are all relevant to the Phoebus environment, but will have no bearing on the operation of this application.
-        // They are modeled here so that updates to the `enabled` field do not erase other configuration settings.
-        pub latching: Option<bool>,
-        pub annunciating: Option<bool>,
-        pub delay: Option<i64>,
-        pub count: Option<i64>,
-        pub filter: Option<String>,
-        pub guidance: Option<Vec<TitleDetails>>,
-        pub displays: Option<Vec<TitleDetails>>,
-        pub commands: Option<Vec<TitleDetails>>,
-        pub actions: Option<Vec<TitleDetails>>,
-    }
-
-    /// This struct is a convenience for parsing the key of a Phoebus Kafka message.
-    #[derive(Debug)]
-    pub struct Key {
-        /// An [`Operation`] representing the first characters of the key string,
-        /// everything before the first `:` character.
-        pub operation: Operation,
-
-        /// The middle part of the key string, describing the path to the alarm in the Phoebus display.
-        pub display_path: String,
-
-        /// The name of the PV (or 'device'); the last part of the key string. Everything after the final '/' character.
-        pub device: String,
-    }
-    impl From<String> for Key {
-        fn from(value: String) -> Self {
-            // The device name will be everything after the final `/` character. Use reverse split to extract it more easily.
-            let (prefix, device) = value.rsplit_once("/").unwrap();
-            // The operation (config, command, etc.) is encoded as all the text before the first `:` character.
-            let (operation_str, display_path) = prefix.split_once(":").unwrap();
-            Key {
-                operation: Operation::from(operation_str),
-                display_path: display_path.to_owned(),
-                device: device.to_owned(),
-            }
-        }
-    }
-
-    /// Encapsulates the various operations from Phoebus that this sync service will handle.
-    #[derive(Debug, Eq, PartialEq)]
-    pub enum Operation {
-        Command,
-        Config,
-        Other,
-    }
-    impl Operation {
-        /// Generates the prefix for the Kafka message key that is relevant to the current operation type.
-        pub fn get_key_prefix(&self) -> &'static str {
-            match self {
-                Operation::Command => "command",
-                Operation::Config => "config",
-                Operation::Other => "",
-            }
-        }
-
-        /// Provides a [`String`] to use when an attempt is made to operate on an [`Other`](Self::Other) operation.
-        pub fn get_err_string_for_other() -> String {
-            "Cannot operate on type 'Other'".to_string()
-        }
-    }
-    impl From<&str> for Operation {
-        fn from(value: &str) -> Self {
-            match value {
-                "command" => Operation::Command,
-                "config" => Operation::Config,
-                _ => Operation::Other,
-            }
-        }
-    }
-
-    /// Metadata to track about individual PV alarms.
-    /// Allows the sync service to push updates to Phoebus without damaging other parts of the alarm configuration.
-    #[derive(Clone, Debug)]
-    pub struct PvMetadata {
-        /// The last configuration record received for this PV. Preserved so future updates to the enabled state of the alarm
-        /// do not erase other config data.
-        pub config: Config,
-
-        /// The path to the PV in the Phoebus display. Extracted from the config message key.
-        pub display_path: String,
-
-        /// The topic that this PV's alarms appear in.
-        pub phoebus_topic: String,
-    }
-
-    /// A sub-element of a Phoebus configuration record. Not relevant to this application,
-    /// but modeled so it is preserved when this service pushes updates to Phoebus.
-    #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct TitleDetails {
-        pub title: String,
-        pub details: String,
-        pub delay: Option<String>,
-    }
-}
-
 /// Encapsulates the latest state information about an alarm.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CachedState {
     /// The latest [`State`](alarm::status::State) the sync service has recorded for the alarm.
     pub state: alarm::status::State,
@@ -162,11 +33,57 @@ pub struct CachedState {
     /// Otherwise, this field will be [`None`].
     pub wake: Option<generated::Timestamp>,
 }
+impl CachedState {
+    pub fn bypassed() -> Self {
+        Self {
+            state: State::Bypassed,
+            wake: None,
+        }
+    }
+}
+impl Default for CachedState {
+    fn default() -> Self {
+        Self {
+            state: State::Unknown,
+            wake: None,
+        }
+    }
+}
 impl From<alarm::Status> for CachedState {
     fn from(value: alarm::Status) -> Self {
         CachedState {
             state: value.state(),
             wake: value.wake,
+        }
+    }
+}
+impl From<bool> for CachedState {
+    fn from(is_active: bool) -> Self {
+        Self {
+            state: if is_active {
+                State::Ok
+            } else {
+                State::Bypassed
+            },
+            wake: None,
+        }
+    }
+}
+impl<Tz: TimeZone> From<DateTime<Tz>> for CachedState {
+    fn from(value: DateTime<Tz>) -> Self {
+        if value.timestamp_millis() > Utc::now().timestamp_millis() {
+            Self {
+                state: State::Bypassed,
+                wake: Some(Timestamp {
+                    seconds: value.timestamp(),
+                    nanos: value.timestamp_subsec_nanos() as i32,
+                }),
+            }
+        } else {
+            Self {
+                state: State::Ok,
+                wake: None,
+            }
         }
     }
 }
@@ -253,7 +170,7 @@ pub trait Synchronizer<P: Publisher, S: Subscriber> {
     fn new(config: SynchronizerConfig) -> Self;
 
     /// Kicks off the async process to monitor for alarm updates that need synchronization.
-    async fn synchronize(&mut self);
+    async fn synchronize<SNAP: Snapshot>(&mut self);
 }
 
 mod common {
@@ -277,39 +194,6 @@ mod google {
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    fn should_create_key_from_string() {
-        let result = phoebus::Key::from("command:some/path/here/MyDevice".to_string());
-        assert_eq!(result.device, "MyDevice");
-        assert_eq!(result.display_path, "some/path/here");
-        assert_eq!(result.operation, phoebus::Operation::Command);
-
-        let result = phoebus::Key::from("config:some/other/path/here/MyDevice2".to_string());
-        assert_eq!(result.device, "MyDevice2");
-        assert_eq!(result.display_path, "some/other/path/here");
-        assert_eq!(result.operation, phoebus::Operation::Config);
-
-        let result = phoebus::Key::from("state:some/path/here/MyDevice".to_string());
-        assert_eq!(result.device, "MyDevice");
-        assert_eq!(result.display_path, "some/path/here");
-        assert_eq!(result.operation, phoebus::Operation::Other);
-    }
-
-    #[test]
-    fn should_get_err_string_for_operation() {
-        assert_eq!(
-            "Cannot operate on type 'Other'",
-            phoebus::Operation::get_err_string_for_other()
-        );
-    }
-
-    #[test]
-    fn should_get_operation_key_prefix() {
-        assert_eq!("command", phoebus::Operation::Command.get_key_prefix());
-        assert_eq!("config", phoebus::Operation::Config.get_key_prefix());
-        assert_eq!("", phoebus::Operation::Other.get_key_prefix());
-    }
 
     #[test]
     fn should_get_cached_state_from_alarm_status() {

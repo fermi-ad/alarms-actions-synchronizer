@@ -10,7 +10,7 @@ use crate::{
     },
     utils::get_command_topic,
 };
-use rust_pubsub_lib::{Message, Publisher, Subscriber};
+use rust_pubsub_lib::{Message, Publisher, Snapshot, Subscriber};
 use std::collections::HashMap;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
@@ -163,7 +163,7 @@ impl<P: Publisher + Send + Sync, S: Subscriber + Send + Sync> Synchronizer<P, S>
         }
     }
 
-    async fn synchronize(&mut self) {
+    async fn synchronize<SNAP: Snapshot>(&mut self) {
         info!("Starting Controls-to-Phoebus Synchronizer");
         let mut controls_stream = self.controls.get_stream();
         loop {
