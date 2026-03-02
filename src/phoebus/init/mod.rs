@@ -68,7 +68,7 @@ async fn populate_caches(
 /// Attempts to convert the provided `value` into an instance of [`Config`], then updates the device's
 /// value in [`AlarmStateCache`] and [`PvCache`].
 async fn handle_config(
-    topic: &String,
+    topic: &str,
     state_cache: &AlarmStateCache,
     pv_cache: &PvCache,
     key: Key,
@@ -94,7 +94,7 @@ async fn handle_config(
         PvMetadata {
             config,
             display_path: key.display_path,
-            phoebus_topic: topic.clone(),
+            phoebus_topic: topic.to_string(),
         },
     );
 }
