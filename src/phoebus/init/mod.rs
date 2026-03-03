@@ -9,7 +9,7 @@ use crate::models::{
 };
 use rust_pubsub_lib::{Message, Snapshot};
 use serde_json::Value;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 /// Populates the [`AlarmStateCache`] and [`PvCache`] with the initial read of all messages in each configured Phoebus topic.
 pub async fn get_existing_messages_from_phoebus<SNAP: Snapshot>(
@@ -48,6 +48,9 @@ async fn populate_caches(
     state_cache: &AlarmStateCache,
     pv_cache: &PvCache,
 ) {
+    if configs_and_states.is_empty() {
+        info!("Topic {topic} has no messages");
+    }
     for message in configs_and_states {
         let msg_key = match message.key {
             Some(k) => k,

@@ -2,14 +2,17 @@
 //!
 //! Contains data structures that are germane to the Phoebus environment.
 
+use std::fmt::Display;
+
 use super::CachedState;
 use chrono::DateTime;
+use serde::{Deserialize, Deserializer, Serialize};
 use tracing::error;
 
 /// A struct representing a message from the Command topic.
 ///
 /// Used in the Phoebus context to acknowledge alarms.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Command {
     /// The user issuing the command.
     pub user: String,
@@ -26,7 +29,7 @@ pub struct Command {
 /// Used in the Phoebus context to enable, bypass, and snooze alarms.
 ///
 /// A field set to [`None`] indicates `false`, or that the field should be ignored.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     /// The user setting the new configuration.
     pub user: String,
@@ -37,6 +40,7 @@ pub struct Config {
     /// The enabled state of the alarm.
     ///
     /// This is either a time or a boolean - represented as a string to handle the ambiguity. Thanks EPICS.
+    #[serde(default, deserialize_with = "bool_or_string")]
     pub enabled: Option<String>,
 
     // The remaining values are all relevant to the Phoebus environment, but will have no bearing on the operation of this application.
@@ -148,11 +152,39 @@ pub struct PvMetadata {
 
 /// A sub-element of a Phoebus configuration record. Not relevant to this application,
 /// but modeled so it is preserved when this service pushes updates to Phoebus.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TitleDetails {
     pub title: String,
     pub details: String,
     pub delay: Option<String>,
+}
+
+/// This function is used by [`serde`] to convert the [`Config::enabled`] field from a JSON value to an [`Option<String>`].
+/// The default [`Deserializer`] cannot handle the ambiguity of the JSON value sometimes being a
+/// raw Boolean and sometimes being a string. This function resolves that ambiguity on `serde`'s behalf.
+fn bool_or_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // Need this helper enum to do the initial deserialization. This is the piece that helps serde gracefully
+    // translate `true` as a `bool` and `"true"` as a `String`
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrBool {
+        Str(String),
+        Bool(bool),
+    }
+    impl Display for StringOrBool {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Bool(b) => write!(f, "{b}"),
+                Self::Str(s) => write!(f, "{s}"),
+            }
+        }
+    }
+
+    Option::<StringOrBool>::deserialize(deserializer)
+        .map(|str_or_bool_opt| str_or_bool_opt.map(|str_or_bool| str_or_bool.to_string()))
 }
 
 #[cfg(test)]
@@ -222,5 +254,26 @@ mod test {
         assert_eq!("command", Operation::Command.get_key_prefix());
         assert_eq!("config", Operation::Config.get_key_prefix());
         assert_eq!("", Operation::Other.get_key_prefix());
+    }
+
+    #[test]
+    fn serde_json_deserializes_config_enabled_as_string() {
+        let mut expected = Config::default();
+        expected.enabled = Some(false.to_string());
+
+        // First, test we get a successful output when the field is a raw Boolean
+        let mut test_input = "{ \"user\": \"\", \"host\": \"\", \"enabled\": false }";
+        let mut result = serde_json::from_str::<Config>(test_input).unwrap();
+        assert_eq!(expected, result);
+
+        // Next, test that we get the same output when the field is a string
+        test_input = "{ \"user\": \"\", \"host\": \"\", \"enabled\": \"false\" }";
+        result = serde_json::from_str::<Config>(test_input).unwrap();
+        assert_eq!(expected, result);
+
+        // Finally, test that we get the same output when the field is missing
+        test_input = "{ \"user\": \"\", \"host\": \"\" }";
+        result = serde_json::from_str::<Config>(test_input).unwrap();
+        assert_eq!(Config::default(), result);
     }
 }
