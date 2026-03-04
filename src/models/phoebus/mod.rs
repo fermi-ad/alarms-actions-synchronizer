@@ -2,11 +2,10 @@
 //!
 //! Contains data structures that are germane to the Phoebus environment.
 
-use std::fmt::Display;
-
 use super::CachedState;
 use chrono::DateTime;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::fmt::Display;
 use tracing::error;
 
 /// A struct representing a message from the Command topic.

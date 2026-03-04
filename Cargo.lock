@@ -706,8 +706,8 @@ dependencies = [
 
 [[package]]
 name = "rust-pubsub-lib"
-version = "4.0.2"
-source = "git+https://github.com/fermi-ad/rust-pubsub-lib?tag=v4.0.2#9eebcd117240761651d117a570b0a8f1b10f18ab"
+version = "4.0.3"
+source = "git+https://github.com/fermi-ad/rust-pubsub-lib?tag=v4.0.3#9e341e0f0ec7d8b5c247a84e277f9483345fb4c7"
 dependencies = [
  "rdkafka",
  "rust-env-var-lib",
