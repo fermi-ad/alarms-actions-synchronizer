@@ -1,5 +1,5 @@
 [env]
-# Variables to be used when running `cargo test`. Executing the compliled binary in production will not use these values.
+# Variables to be used when running `cargo test`. Executing the compiled binary in production will not use these values.
 CONTROLS_HOST = "test host"
 CONTROLS_TOPIC = "test topic"
 KAFKA_CONNECTION_SECONDS = "1"
