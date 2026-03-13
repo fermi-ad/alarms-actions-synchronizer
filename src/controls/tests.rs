@@ -9,10 +9,18 @@ use crate::{
         alarm::status::State,
         phoebus::{Command, Config, PvMetadata},
     },
-    utils::test_runner::{MessageOrigin, PHOEBUS_TOPIC, TestRunner},
+    utils::test_runner::{MessageOrigin, PHOEBUS_TOPIC, TestRunner, get_mock_sync_config_salted},
 };
 use rust_pubsub_lib::kafka_impl::{KafkaPublisher, KafkaSubscriber};
 use std::sync::Arc;
+
+async fn get_salted_test_instance() -> TestRunner<SyncImpl<KafkaPublisher>> {
+    TestRunner::<SyncImpl<KafkaPublisher>>::check_when(
+        MessageOrigin::Controls,
+        Some(get_mock_sync_config_salted()),
+    )
+    .await
+}
 
 async fn get_test_instance() -> TestRunner<SyncImpl<KafkaPublisher>> {
     TestRunner::<SyncImpl<KafkaPublisher>>::check_when(MessageOrigin::Controls, None).await
@@ -144,7 +152,7 @@ async fn should_not_sync_when_alarm_state_is_not_syncable() {
 #[tokio::test]
 #[tracing_test::traced_test]
 async fn should_not_sync_when_no_change_in_alarm_state() {
-    let test_instance = get_test_instance().await;
+    let test_instance = get_salted_test_instance().await;
     let sync = &test_instance.sync;
 
     sync.pv_metadata.write().await.insert(
@@ -228,7 +236,7 @@ async fn should_not_transmit_acnet_device() {
         value: serde_json::to_string(&status).unwrap(),
     };
 
-    get_test_instance()
+    get_salted_test_instance()
         .await
         .has(message)
         .results_in(async || {
