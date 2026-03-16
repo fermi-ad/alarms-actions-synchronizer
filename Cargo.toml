@@ -7,11 +7,12 @@ edition = "2024"
 async-trait = "0.1.89"
 chrono = "0.4.44"
 prost = "0.14.3"
-rust-pubsub-lib = { git = "https://github.com/fermi-ad/rust-pubsub-lib", tag = "v4.0.3" }
+rust-pubsub-lib = { git = "https://github.com/fermi-ad/rust-pubsub-lib", tag = "v6.0.0" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread", "signal", "sync"] }
 tokio-stream = "0.1.18"
+tokio-util = "0.7.18"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
@@ -20,4 +21,6 @@ prost-build = "0.14.3"
 protoc-bin-vendored = "3.2.0"
 
 [dev-dependencies]
+rust-pubsub-lib = { git = "https://github.com/fermi-ad/rust-pubsub-lib", tag = "v6.0.0", features = ["testing-utils"] }
 tracing-test = "0.2.6"
+uuid = { version = "1.22.0", features = ["v4"] }

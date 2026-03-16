@@ -5,14 +5,18 @@
 pub use common::alarm;
 pub use google::protobuf as generated;
 
-use alarm::status::State;
+use alarm::{Status, status::State};
 use chrono::{DateTime, TimeZone, Utc};
 use generated::Timestamp;
 use rust_pubsub_lib::{Publisher, Snapshot, Subscriber};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 pub mod phoebus;
+
+#[cfg(test)]
+mod tests;
 
 /// The command that will come in from/should be sent to Phoebus during an acknowledgement.
 pub const ACK_COMMAND: &str = "acknowledge";
@@ -26,12 +30,12 @@ pub type PvCache = Arc<RwLock<HashMap<String, phoebus::PvMetadata>>>;
 /// Encapsulates the latest state information about an alarm.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CachedState {
-    /// The latest [`State`](alarm::status::State) the sync service has recorded for the alarm.
-    pub state: alarm::status::State,
+    /// The latest [`State`] the sync service has recorded for the alarm.
+    pub state: State,
     /// If the alarm is snoozed, this field will be set to [`Some`] with the reenablement time, and
-    /// the [`state`](Self::state) field will be set to [`Bypassed`](alarm::status::State::Bypassed).
+    /// the [`state`](Self::state) field will be set to [`Bypassed`](State::Bypassed).
     /// Otherwise, this field will be [`None`].
-    pub wake: Option<generated::Timestamp>,
+    pub wake: Option<Timestamp>,
 }
 impl CachedState {
     pub fn bypassed() -> Self {
@@ -49,8 +53,8 @@ impl Default for CachedState {
         }
     }
 }
-impl From<alarm::Status> for CachedState {
-    fn from(value: alarm::Status) -> Self {
+impl From<Status> for CachedState {
+    fn from(value: Status) -> Self {
         CachedState {
             state: value.state(),
             wake: value.wake,
@@ -94,6 +98,9 @@ pub struct SynchronizerConfig {
     /// A reference to the shared cache of alarm state data.
     pub alarm_states: AlarmStateCache,
 
+    /// A [`CancellationToken`] to handle gracefully shutting down the tokio runtime.
+    pub cancel_token: CancellationToken,
+
     /// The location of the Controls Kafka instance.
     pub controls_host: String,
 
@@ -122,6 +129,7 @@ impl SynchronizerConfig {
     /// As part of the initialization, this constructor will generate the shared atomic caches
     /// on the heap.
     pub fn new(
+        cancel_token: CancellationToken,
         controls_host: String,
         controls_topic: String,
         phoebus_host: String,
@@ -129,6 +137,7 @@ impl SynchronizerConfig {
     ) -> Self {
         SynchronizerConfig {
             alarm_states: Arc::new(RwLock::new(HashMap::<String, CachedState>::new())),
+            cancel_token,
             controls_host,
             controls_topic,
             phoebus_host,
@@ -144,6 +153,7 @@ impl Clone for SynchronizerConfig {
     fn clone(&self) -> Self {
         SynchronizerConfig {
             alarm_states: Arc::clone(&self.alarm_states),
+            cancel_token: self.cancel_token.clone(),
             controls_host: self.controls_host.clone(),
             controls_topic: self.controls_topic.clone(),
             phoebus_host: self.phoebus_host.clone(),
@@ -170,7 +180,7 @@ pub trait Synchronizer<P: Publisher, S: Subscriber> {
     fn new(config: SynchronizerConfig) -> Self;
 
     /// Kicks off the async process to monitor for alarm updates that need synchronization.
-    async fn synchronize<SNAP: Snapshot>(&mut self);
+    async fn synchronize<SNAP: Snapshot>(self);
 }
 
 mod common {
@@ -188,54 +198,5 @@ mod google {
         //!
         //! Contains the builtin structures (mainly [`Timestamp`]) provided by Google
         include!(concat!(env!("OUT_DIR"), "/google.protobuf.rs"));
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn should_get_cached_state_from_alarm_status() {
-        let status = alarm::Status {
-            device: String::new(),
-            source: alarm::status::Source::Analog as i32,
-            state: alarm::status::State::Acknowledged as i32,
-            severity: alarm::status::Severity::High as i32,
-            acknowledgeable: false,
-            time: None,
-            epics_type: String::new(),
-            user: String::new(),
-            wake: None,
-        };
-
-        let result = CachedState::from(status);
-        assert_eq!(result.state, alarm::status::State::Acknowledged);
-        assert_eq!(result.wake, None);
-    }
-
-    #[test]
-    fn should_create_and_clone_sync_config() {
-        let controls_host = String::from("my controls host");
-        let controls_topic = String::from("my controls topic");
-        let phoebus_host = String::from("my phoebus host");
-        let phoebus_topics = vec![String::from("topic1"), String::from("topic2")];
-
-        let orig_config = SynchronizerConfig::new(
-            controls_host.clone(),
-            controls_topic.clone(),
-            phoebus_host.clone(),
-            phoebus_topics.clone(),
-        );
-
-        assert_eq!(controls_host, orig_config.controls_host);
-        assert_eq!(controls_topic, orig_config.controls_topic);
-        assert_eq!(phoebus_host, orig_config.phoebus_host);
-        assert_eq!(phoebus_topics, orig_config.phoebus_topics);
-        assert_eq!(1, Arc::strong_count(&orig_config.alarm_states));
-        assert_eq!(1, Arc::strong_count(&orig_config.pv_metadata));
-
-        let cloned_config = orig_config.clone();
-        assert_eq!(orig_config, cloned_config);
     }
 }
