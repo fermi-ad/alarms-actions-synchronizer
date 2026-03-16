@@ -33,7 +33,7 @@ pub struct CachedState {
     /// The latest [`State`] the sync service has recorded for the alarm.
     pub state: State,
     /// If the alarm is snoozed, this field will be set to [`Some`] with the reenablement time, and
-    /// the [`state`](Self::state) field will be set to [`Bypassed`](alarm::status::State::Bypassed).
+    /// the [`state`](Self::state) field will be set to [`Bypassed`](State::Bypassed).
     /// Otherwise, this field will be [`None`].
     pub wake: Option<Timestamp>,
 }
