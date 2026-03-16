@@ -79,19 +79,6 @@ fn should_map_snoozed_state() {
 }
 
 #[test]
-fn should_not_convert_when_not_config_or_command() {
-    let status = Status::default();
-    let metadata = PvMetadata {
-        config: Config::default(),
-        display_path: String::new(),
-        phoebus_topic: String::new(),
-    };
-
-    let result = controls_to_phoebus(&status, Operation::Other, &metadata).unwrap_err();
-    assert_eq!(result, Operation::get_err_string_for_other());
-}
-
-#[test]
 fn should_not_transform_when_not_config_or_command() {
     let status = Status::default();
     let metadata = PvMetadata {
