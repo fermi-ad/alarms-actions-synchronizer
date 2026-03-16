@@ -5,7 +5,7 @@
 pub use common::alarm;
 pub use google::protobuf as generated;
 
-use alarm::status::State;
+use alarm::{Status, status::State};
 use chrono::{DateTime, TimeZone, Utc};
 use generated::Timestamp;
 use rust_pubsub_lib::{Publisher, Snapshot, Subscriber};
@@ -30,12 +30,12 @@ pub type PvCache = Arc<RwLock<HashMap<String, phoebus::PvMetadata>>>;
 /// Encapsulates the latest state information about an alarm.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CachedState {
-    /// The latest [`State`](alarm::status::State) the sync service has recorded for the alarm.
-    pub state: alarm::status::State,
+    /// The latest [`State`] the sync service has recorded for the alarm.
+    pub state: State,
     /// If the alarm is snoozed, this field will be set to [`Some`] with the reenablement time, and
     /// the [`state`](Self::state) field will be set to [`Bypassed`](alarm::status::State::Bypassed).
     /// Otherwise, this field will be [`None`].
-    pub wake: Option<generated::Timestamp>,
+    pub wake: Option<Timestamp>,
 }
 impl CachedState {
     pub fn bypassed() -> Self {
@@ -53,8 +53,8 @@ impl Default for CachedState {
         }
     }
 }
-impl From<alarm::Status> for CachedState {
-    fn from(value: alarm::Status) -> Self {
+impl From<Status> for CachedState {
+    fn from(value: Status) -> Self {
         CachedState {
             state: value.state(),
             wake: value.wake,
