@@ -5,7 +5,8 @@
 use super::CachedState;
 use chrono::DateTime;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::fmt::Display;
+use serde_json::Value;
+use std::{collections::HashMap, fmt::Display};
 use tracing::error;
 
 #[cfg(test)]
@@ -33,29 +34,22 @@ pub struct Command {
 /// A field set to [`None`] indicates `false`, or that the field should be ignored.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Config {
-    /// The user setting the new configuration.
-    pub user: String,
-
-    /// The host the user is making the change from.
-    pub host: String,
-
     /// The enabled state of the alarm.
     ///
     /// This is either a time or a boolean - represented as a string to handle the ambiguity. Thanks EPICS.
     #[serde(default, deserialize_with = "bool_or_string")]
     pub enabled: Option<String>,
 
-    // The remaining values are all relevant to the Phoebus environment, but will have no bearing on the operation of this application.
-    // They are modeled here so that updates to the `enabled` field do not erase other configuration settings.
-    pub latching: Option<bool>,
-    pub annunciating: Option<bool>,
-    pub delay: Option<i64>,
-    pub count: Option<i64>,
-    pub filter: Option<String>,
-    pub guidance: Option<Vec<TitleDetails>>,
-    pub displays: Option<Vec<TitleDetails>>,
-    pub commands: Option<Vec<TitleDetails>>,
-    pub actions: Option<Vec<TitleDetails>>,
+    /// The host the user is making the change from.
+    pub host: String,
+
+    /// The user setting the new configuration.
+    pub user: String,
+
+    /// The remaining values in the JSON message are all relevant to the Phoebus environment, but will have no bearing on the operation of this application.
+    /// They are modeled here so that updates to the `enabled` field do not erase other configuration settings.
+    #[serde(flatten)]
+    pub phoebus_specific: HashMap<String, Value>,
 }
 impl Config {
     /// Generates an instance of [`CachedState`] based on the [`enabled`](Config::enabled) field of this [`Config`]
@@ -150,15 +144,6 @@ pub struct PvMetadata {
 
     /// The topic that this PV's alarms appear in.
     pub phoebus_topic: String,
-}
-
-/// A sub-element of a Phoebus configuration record. Not relevant to this application,
-/// but modeled so it is preserved when this service pushes updates to Phoebus.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct TitleDetails {
-    pub delay: Option<String>,
-    pub details: String,
-    pub title: String,
 }
 
 /// This function is used by [`serde`] to convert the [`Config::enabled`] field from a JSON value to an [`Option<String>`].

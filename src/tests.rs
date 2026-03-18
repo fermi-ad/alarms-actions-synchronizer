@@ -69,3 +69,32 @@ async fn should_begin_sync() {
         begin_sync::<MockPubSub, MockPubSub, MockPubSub, MockSync>(create_synchronizer_config());
     assert_eq!((), handle.await.unwrap());
 }
+
+#[test]
+#[should_panic]
+fn new_mock_pubsub_as_publisher() {
+    let _ = <MockPubSub as Publisher>::new(String::new(), String::new());
+}
+
+#[test]
+#[should_panic]
+fn new_mock_pubsub_as_subscriber() {
+    let _ = <MockPubSub as Subscriber>::new(String::new(), String::new());
+}
+
+#[tokio::test]
+#[should_panic]
+async fn mock_pubsub_publish() {
+    let _ = MockPubSub.publish(Message::from_value(String::new())).await;
+}
+
+#[tokio::test]
+#[should_panic]
+async fn mock_pubsub_snapshot() {
+    let _ = MockPubSub::get(String::new(), String::new()).await;
+}
+
+#[test]
+fn mock_pubsub_stream() {
+    assert!(MockPubSub.get_stream().is_ok());
+}
