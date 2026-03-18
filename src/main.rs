@@ -3,11 +3,11 @@
 //! An app to synchronize the user actions between the Controls and Phoebus alarms servers.
 
 use models::{Synchronizer, SynchronizerConfig};
+use rust_env_var_lib::env_var;
 use rust_pubsub_lib::{
     Publisher, Snapshot, Subscriber,
     kafka_impl::{KafkaPublisher, KafkaSnapshot, KafkaSubscriber},
 };
-use std::env;
 use tokio::{
     signal,
     task::{JoinError, JoinHandle},
@@ -43,13 +43,10 @@ async fn main() -> Result<(), JoinError> {
 /// # Panics
 /// Ends the process if any of the variables are not set.
 fn create_synchronizer_config() -> SynchronizerConfig {
-    let controls_host =
-        env::var("CONTROLS_HOST").expect("CONTROLS_HOST environment variable not set");
-    let controls_topic =
-        env::var("CONTROLS_TOPIC").expect("CONTROLS_TOPIC environment variable not set");
-    let phoebus_host = env::var("PHOEBUS_HOST").expect("PHOEBUS_HOST environment variable not set");
-    let phoebus_topics: Vec<String> = env::var("PHOEBUS_TOPICS")
-        .expect("PHOEBUS_TOPICS environment variable not set")
+    let controls_host = env_var::expect("CONTROLS_HOST");
+    let controls_topic = env_var::expect("CONTROLS_TOPIC");
+    let phoebus_host = env_var::expect("PHOEBUS_HOST");
+    let phoebus_topics = env_var::expect::<String>("PHOEBUS_TOPICS")
         .split(',')
         .map(|s| s.trim().to_string())
         .collect();

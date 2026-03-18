@@ -1,4 +1,4 @@
-name: Rust Continuous Integration
+name: CI-CD
 
 on:
   push:
@@ -11,6 +11,19 @@ on:
 jobs:
   run-tests-and-coverage:
     uses: fermi-ad/.github/.github/workflows/rust-integration.yaml@9d9465e0b6a0c473d68ecf1b04dec74403f48dd3
+    secrets: inherit
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      pull-git-submodules: true
+      references-internal-git-repo: true
+      static-dependencies: 'libcurl4-openssl-dev libsasl2-dev'
+
+  deploy:
+    needs: run-tests-and-coverage
+    if: ${{ github.event_name == 'push' }}
+    uses: fermi-ad/.github/.github/workflows/rust-deployment.yaml@9d9465e0b6a0c473d68ecf1b04dec74403f48dd3
     secrets: inherit
     permissions:
       contents: write
