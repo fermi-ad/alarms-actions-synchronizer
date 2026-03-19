@@ -173,6 +173,7 @@ impl PartialEq for SynchronizerConfig {
         Arc::ptr_eq(&self.alarm_states, &other.alarm_states)
             && self.controls_host == other.controls_host
             && self.controls_topic == other.controls_topic
+            && self.grpc_alarms_svc_host == other.grpc_alarms_svc_host
             && self.phoebus_host == other.phoebus_host
             && self.phoebus_topics == other.phoebus_topics
             && Arc::ptr_eq(&self.pv_metadata, &other.pv_metadata)
