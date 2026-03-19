@@ -195,7 +195,7 @@ mod common {
         //!
         //! Contains the auto-generated alarms structs from Protobuf,
         //! for use when de/serializing records from the Controls Kafka instance.
-        //! Also containst the gRPC interface for issuing commands to the Controls
+        //! Also contains the gRPC interface for issuing commands to the Controls
         //! alarm service.
         include!(concat!(env!("OUT_DIR"), "/common.alarm.rs"));
         include!(concat!(env!("OUT_DIR"), "/services.alarm_commands.v1.rs"));
