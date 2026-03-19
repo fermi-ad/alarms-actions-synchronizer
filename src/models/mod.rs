@@ -107,6 +107,9 @@ pub struct SynchronizerConfig {
     /// The topic to read/write Controls messages from/to.
     pub controls_topic: String,
 
+    /// The location of the gRPC alarms service for Controls.
+    pub grpc_alarms_svc_host: String,
+
     /// The location of the Phoebus Kafka instance.
     pub phoebus_host: String,
 
@@ -132,6 +135,7 @@ impl SynchronizerConfig {
         cancel_token: CancellationToken,
         controls_host: String,
         controls_topic: String,
+        grpc_alarms_svc_host: String,
         phoebus_host: String,
         phoebus_topics: Vec<String>,
     ) -> Self {
@@ -140,6 +144,7 @@ impl SynchronizerConfig {
             cancel_token,
             controls_host,
             controls_topic,
+            grpc_alarms_svc_host,
             phoebus_host,
             phoebus_topics,
             pv_metadata: Arc::new(RwLock::new(HashMap::<String, phoebus::PvMetadata>::new())),
@@ -156,6 +161,7 @@ impl Clone for SynchronizerConfig {
             cancel_token: self.cancel_token.clone(),
             controls_host: self.controls_host.clone(),
             controls_topic: self.controls_topic.clone(),
+            grpc_alarms_svc_host: self.grpc_alarms_svc_host.clone(),
             phoebus_host: self.phoebus_host.clone(),
             phoebus_topics: self.phoebus_topics.clone(),
             pv_metadata: Arc::clone(&self.pv_metadata),
@@ -189,7 +195,10 @@ mod common {
         //!
         //! Contains the auto-generated alarms structs from Protobuf,
         //! for use when de/serializing records from the Controls Kafka instance.
+        //! Also containst the gRPC interface for issuing commands to the Controls
+        //! alarm service.
         include!(concat!(env!("OUT_DIR"), "/common.alarm.rs"));
+        include!(concat!(env!("OUT_DIR"), "/services.alarm_commands.v1.rs"));
     }
 }
 mod google {

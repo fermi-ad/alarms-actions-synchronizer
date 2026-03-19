@@ -9,11 +9,13 @@ use crate::{
 };
 use init::get_existing_messages_from_phoebus;
 use rust_pubsub_lib::{Publisher, Snapshot, Subscriber};
+use sync::ControlsClient;
 use tokio::task::JoinSet;
 use tracing::info;
 
 mod init;
 mod monitor;
+mod sync;
 
 #[cfg(test)]
 mod tests;
@@ -40,6 +42,7 @@ impl<P: Publisher, S: Subscriber + Send + Sync + 'static> Synchronizer<P, S> for
             ) => {}
         }
 
+        let controls_client = ControlsClient::new(&self.config.grpc_alarms_svc_host);
         let with_command_topics = self
             .config
             .phoebus_topics
@@ -48,7 +51,7 @@ impl<P: Publisher, S: Subscriber + Send + Sync + 'static> Synchronizer<P, S> for
             .collect::<Vec<_>>();
         let mut monitors = JoinSet::new();
         for topic in with_command_topics {
-            let monitor = Monitor::new(topic, &self.config);
+            let monitor = Monitor::new(topic, &self.config, controls_client.clone());
             monitors.spawn(monitor.start::<S>());
         }
 

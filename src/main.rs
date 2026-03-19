@@ -45,6 +45,7 @@ async fn main() -> Result<(), JoinError> {
 fn create_synchronizer_config() -> SynchronizerConfig {
     let controls_host = env_var::expect("CONTROLS_HOST");
     let controls_topic = env_var::expect("CONTROLS_TOPIC");
+    let grpc_alarms_svc_host = env_var::expect("GRPC_ALARMS_SERVICE_HOST");
     let phoebus_host = env_var::expect("PHOEBUS_HOST");
     let phoebus_topics = env_var::expect::<String>("PHOEBUS_TOPICS")
         .split(',')
@@ -55,6 +56,7 @@ fn create_synchronizer_config() -> SynchronizerConfig {
         CancellationToken::new(),
         controls_host,
         controls_topic,
+        grpc_alarms_svc_host,
         phoebus_host,
         phoebus_topics,
     )

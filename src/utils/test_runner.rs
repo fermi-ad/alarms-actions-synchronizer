@@ -39,6 +39,7 @@ pub fn get_mock_sync_config() -> SynchronizerConfig {
         String::new(),
         String::from(CONTROLS_TOPIC),
         String::new(),
+        String::new(),
         vec![String::from(PHOEBUS_TOPIC)],
     )
 }
