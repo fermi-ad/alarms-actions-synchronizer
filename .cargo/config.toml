@@ -2,6 +2,7 @@
 # Variables to be used when running `cargo test`. Executing the compiled binary in production will not use these values.
 CONTROLS_HOST = "test host"
 CONTROLS_TOPIC = "test topic"
+GRPC_ALARMS_SERVICE_HOST = "test host"
 KAFKA_CONNECTION_SECONDS = "1"
 PHOEBUS_HOST = "test host"
 PHOEBUS_TOPICS = "topic1,topic2"

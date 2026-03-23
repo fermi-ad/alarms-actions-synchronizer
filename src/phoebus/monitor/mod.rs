@@ -2,10 +2,13 @@
 //!
 //! Contains the construct that watches a given Phoebus topic and reports relevant messages to Controls.
 
-use crate::models::{
-    ACK_COMMAND, AlarmStateCache, CachedState, PvCache, SynchronizerConfig,
-    alarm::status::State,
-    phoebus::{Command, Config, Key, Operation, PvMetadata},
+use crate::{
+    models::{
+        ACK_COMMAND, AlarmStateCache, CachedState, PvCache, SynchronizerConfig,
+        alarm::status::State,
+        phoebus::{Command, Config, Key, Operation, PvMetadata},
+    },
+    phoebus::sync::ControlsClient,
 };
 use rust_pubsub_lib::{Message, PubSubError, Subscriber};
 use std::{sync::Arc, time::Duration};
@@ -22,7 +25,7 @@ pub struct Monitor {
     cancel_token: CancellationToken,
 
     /// The client for passing alarms info to the Controls alarms service.
-    _controls: (), // TODO: Swap this out with the gRPC service for talking to the Controls alarms app when it becomes available.
+    controls_client: ControlsClient,
 
     /// The location of the Phoebus alarms topics. Used during inital startup of the sync operation.
     phoebus_host: String,
@@ -35,11 +38,15 @@ pub struct Monitor {
 }
 impl Monitor {
     /// Generates a [`Monitor`] for the provided topic.
-    pub fn new(topic: String, config: &SynchronizerConfig) -> Self {
+    pub fn new(
+        topic: String,
+        config: &SynchronizerConfig,
+        controls_client: ControlsClient,
+    ) -> Self {
         Monitor {
             alarm_states: Arc::clone(&config.alarm_states),
             cancel_token: config.cancel_token.clone(),
-            _controls: (),
+            controls_client,
             phoebus_host: config.phoebus_host.clone(),
             pv_metadata: Arc::clone(&config.pv_metadata),
             topic,
@@ -160,10 +167,9 @@ impl Monitor {
             );
             return;
         }
-        info!(
-            "TODO: make call to Controls alarms service, indicating that device '{}' has been acknowledged.",
-            key.device
-        );
+        self.controls_client
+            .acknowledge_alarm(&key.device, &command_msg.user)
+            .await;
         self.alarm_states.write().await.insert(
             key.device,
             CachedState {
