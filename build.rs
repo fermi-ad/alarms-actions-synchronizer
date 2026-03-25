@@ -25,6 +25,15 @@ fn main() -> Result<(), Error> {
 
     tonic_prost_build::configure()
         .build_server(false)
+        .type_attribute(
+            ".google.protobuf",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .compile_well_known_types(true)
+        .type_attribute(
+            ".services.alarm_commands.v1",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
         .compile_protos(
             &["extern/interfaces/proto/controls/service/grpc-alarm-commands/v1/alarm_commands.proto"], 
             &["extern/interfaces/proto/controls/service/grpc-alarm-commands/v1"]
