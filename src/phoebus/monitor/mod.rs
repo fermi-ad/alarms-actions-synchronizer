@@ -110,7 +110,7 @@ impl Monitor {
     }
 
     /// Handles when a config came in from Phoebus to bypass an active alarm.
-    async fn handle_bypassed_alarm(&self, device: &str, updated_state: CachedState) {
+    async fn handle_bypassed_alarm(&self, device: &str, updated_state: CachedState, user: &str) {
         let cached_state = self.alarm_states.read().await.get(device).cloned();
         if let Some(state) = cached_state
             && state == updated_state
@@ -122,18 +122,8 @@ impl Monitor {
             return;
         }
         match updated_state.wake {
-            Some(time) => {
-                info!(
-                    "TODO: Update the alarms serivce with a Snoozed condition for device '{}' with wake time '{:?}'",
-                    device, time
-                );
-            }
-            None => {
-                info!(
-                    "TODO: Update the alarms serivce with a Bypassed condition for device '{}'",
-                    device
-                );
-            }
+            Some(time) => self.controls_client.snooze_alarm(device, user, time).await,
+            None => self.controls_client.bypass_alarm(device, user).await,
         }
         self.alarm_states
             .write()
@@ -201,7 +191,8 @@ impl Monitor {
         if config_msg.enabled != cached_metadata.config.enabled {
             let updated_state = config_msg.as_cached_state();
             if updated_state.state == State::Bypassed {
-                self.handle_bypassed_alarm(&key.device, updated_state).await;
+                self.handle_bypassed_alarm(&key.device, updated_state, &config_msg.user)
+                    .await;
             } else if updated_state.state == State::Ok {
                 self.handle_active_alarm(&key.device, updated_state).await;
             } else {

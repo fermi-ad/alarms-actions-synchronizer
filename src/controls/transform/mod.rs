@@ -34,17 +34,13 @@ pub fn controls_to_phoebus(
             host: CONTROLS_HOST.to_string(),
             command: ACK_COMMAND.to_string(),
         }),
-        Operation::Config => {
-            let enabled = Some(get_enabled_string(controls_alarm));
-            let prev_config = metadata.config.clone();
-            serde_json::to_string(&Config {
-                user: controls_alarm.user.clone(),
-                host: CONTROLS_HOST.to_string(),
-                enabled,
-                ..prev_config
-            })
-        }
-        _ => return Err(Operation::get_err_string_for_other()),
+        Operation::Config => serde_json::to_string(&Config {
+            user: controls_alarm.user.clone(),
+            host: CONTROLS_HOST.to_string(),
+            enabled: Some(get_enabled_string(controls_alarm)),
+            phoebus_specific: metadata.config.phoebus_specific.clone(),
+        }),
+        Operation::Other => return Err(Operation::get_err_string_for_other()),
     }
     .map_err(|e| format!("{e:?}"))?;
     Ok(Message {

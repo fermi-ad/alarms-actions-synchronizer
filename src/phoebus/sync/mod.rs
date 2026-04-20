@@ -2,7 +2,13 @@
 //!
 //! Handles how updates from Phoebus are communicated to the Controls alarms server.
 
-use crate::models::alarm::{AcknowledgeAlarmRequest, alarm_commands_client::AlarmCommandsClient};
+use crate::models::{
+    alarm::{
+        AcknowledgeAlarmRequest, BypassAlarmRequest, SnoozeAlarmRequest,
+        alarm_commands_client::AlarmCommandsClient,
+    },
+    generated::{Empty, Timestamp},
+};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tonic::{Response, transport::Channel};
@@ -16,8 +22,26 @@ type ControlsClientConnection = Arc<RwLock<Option<AlarmCommandsClient<Channel>>>
 async fn acknowledge(
     conn: &mut AlarmCommandsClient<Channel>,
     request: AcknowledgeAlarmRequest,
-) -> Result<tonic::Response<()>, tonic::Status> {
+) -> Result<Response<Empty>, tonic::Status> {
     conn.acknowledge_alarm(request).await
+}
+
+/// The logic for passing the provided [`BypassAlarmRequest`] to an instance of [`AlarmCommandsClient`].
+/// Can be passed to [`ControlsClient::send_command`] as the `update` parameter.
+async fn bypass(
+    conn: &mut AlarmCommandsClient<Channel>,
+    request: BypassAlarmRequest,
+) -> Result<Response<Empty>, tonic::Status> {
+    conn.bypass_alarm(request).await
+}
+
+/// The logic for passing the provided [`SnoozeAlarmRequest`] to an instance of [`AlarmCommandsClient`].
+/// Can be passed to [`ControlsClient::send_command`] as the `update` parameter.
+async fn snooze(
+    conn: &mut AlarmCommandsClient<Channel>,
+    request: SnoozeAlarmRequest,
+) -> Result<Response<Empty>, tonic::Status> {
+    conn.snooze_alarm(request).await
 }
 
 /// Handles the reference to the global [`AlarmCommandsClient`] instance and provides methods to interact
@@ -43,6 +67,25 @@ impl ControlsClient {
         self.send_command(acknowledge, request).await
     }
 
+    /// Sends the command to the Controls alarms server to bypass the alarming device.
+    pub async fn bypass_alarm(&self, device: &str, user: &str) {
+        let request = BypassAlarmRequest {
+            devices: vec![format!("{device}#Epics")],
+            user: user.to_string(),
+        };
+        self.send_command(bypass, request).await
+    }
+
+    /// Sends the command to the Controls alarms server to snooze the alarming device.
+    pub async fn snooze_alarm(&self, device: &str, user: &str, wake: Timestamp) {
+        let request = SnoozeAlarmRequest {
+            devices: vec![format!("{device}#Epics")],
+            user: user.to_string(),
+            wake: Some(wake),
+        };
+        self.send_command(snooze, request).await
+    }
+
     /// Helper function to acquire a lock on the shared client instance and invoke the provided request.
     /// Clears the reference if there is a problem sending the command, or acquires a new reference if
     /// no existing connection is present.
@@ -51,7 +94,7 @@ impl ControlsClient {
         Update: AsyncFnMut(
             &mut AlarmCommandsClient<Channel>,
             Request,
-        ) -> Result<Response<()>, tonic::Status>,
+        ) -> Result<Response<Empty>, tonic::Status>,
     {
         let mut lock = self.connection.write().await;
         match lock.as_mut() {

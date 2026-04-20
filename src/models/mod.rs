@@ -198,8 +198,13 @@ mod common {
         //! for use when de/serializing records from the Controls Kafka instance.
         //! Also contains the gRPC interface for issuing commands to the Controls
         //! alarm service.
-        include!(concat!(env!("OUT_DIR"), "/common.alarm.rs"));
-        include!(concat!(env!("OUT_DIR"), "/services.alarm_commands.v1.rs"));
+        tonic::include_proto!("common.alarm");
+
+        // Need to nest this one more level due to the `v1` suffix. Otherwise the protobuf Timestamp reference won't line up.
+        pub use commands::*;
+        mod commands {
+            tonic::include_proto!("services.alarm_commands.v1");
+        }
     }
 }
 mod google {
@@ -207,6 +212,6 @@ mod google {
         //! Generated Google Structs Module
         //!
         //! Contains the builtin structures (mainly [`Timestamp`]) provided by Google
-        include!(concat!(env!("OUT_DIR"), "/google.protobuf.rs"));
+        tonic::include_proto!("google.protobuf");
     }
 }
