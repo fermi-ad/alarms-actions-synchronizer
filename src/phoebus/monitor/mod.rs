@@ -4,7 +4,10 @@
 
 use crate::models::alarm::status::State;
 use crate::models::phoebus::{Command, Config, Key, Operation, PvMetadata};
-use crate::models::{ACK_COMMAND, AlarmStateCache, CachedState, PvCache, SynchronizerConfig};
+use crate::models::{
+    ACK_COMMAND, AlarmStateCache, AttemptResult, CachedState, IgnoreReason, PvCache, SkipReason,
+    SyncDirection, SyncOutcome, SynchronizerConfig,
+};
 use crate::phoebus::sync::ControlsClient;
 use rust_pubsub_lib::{Message, PubSubError, StringMessage, Subscriber};
 use std::sync::Arc;
@@ -73,6 +76,8 @@ impl Monitor {
     }
 
     /// Looks up the corresponding [`PvMetadata`] for a given [`Key`], or creates one if none exists.
+    ///
+    /// Runtime Phoebus config messages are also the discovery path that can bring new EPICS devices into scope.
     async fn get_pv_metadata(&self, key: &Key) -> PvMetadata {
         let metadata_opt = self.pv_metadata.read().await.get(&key.device).cloned();
 
@@ -88,26 +93,37 @@ impl Monitor {
     }
 
     /// Handles when a config came in from Phoebus to activate a bypassed alarm.
-    async fn handle_active_alarm(&self, device: &str, updated_state: CachedState) {
+    async fn handle_active_alarm(&self, device: &str, updated_state: CachedState) -> SyncOutcome {
         let cached_state = self.alarm_states.read().await.get(device).cloned();
         if let Some(state) = cached_state
             && state.state != State::Bypassed
         {
             handle_already_active(device);
-        } else {
-            info!(
-                "TODO: Update the alarms serivce with an Ok condition for device '{}'",
-                device
-            );
-            self.alarm_states
-                .write()
-                .await
-                .insert(device.to_owned(), updated_state);
+            return SyncOutcome::Ignored {
+                reason: IgnoreReason::NonSyncOperation,
+            };
+        }
+
+        info!(
+            "TODO: Update the alarms service with an Ok condition for device '{}'",
+            device
+        );
+        self.alarm_states
+            .write()
+            .await
+            .insert(device.to_owned(), updated_state);
+        SyncOutcome::Skipped {
+            reason: SkipReason::UnsupportedCapability,
         }
     }
 
     /// Handles when a config came in from Phoebus to bypass an active alarm.
-    async fn handle_bypassed_alarm(&self, device: &str, updated_state: CachedState, user: &str) {
+    async fn handle_bypassed_alarm(
+        &self,
+        device: &str,
+        updated_state: CachedState,
+        user: &str,
+    ) -> SyncOutcome {
         let cached_state = self.alarm_states.read().await.get(device).cloned();
         if let Some(state) = cached_state
             && state == updated_state
@@ -116,7 +132,7 @@ impl Monitor {
                 "Received configuration update from Phoebus to bypass alarm for device '{}', but it is already bypassed. Updating cached PV config only.",
                 device
             );
-            return;
+            return SyncOutcome::Duplicate;
         }
         match updated_state.wake {
             Some(time) => self.controls_client.snooze_alarm(device, user, time).await,
@@ -126,24 +142,32 @@ impl Monitor {
             .write()
             .await
             .insert(device.to_owned(), updated_state);
+        SyncOutcome::Attempted {
+            direction: SyncDirection::PhoebusToControls,
+            result: AttemptResult::Succeeded,
+        }
     }
 
     /// Handles a Command message coming in from Phoebus.
-    async fn process_command(&self, key: Key, msg_text: String) {
+    async fn process_command(&self, key: Key, msg_text: String) -> SyncOutcome {
         let command_msg = match serde_json::from_str::<Command>(&msg_text) {
             Ok(inner) => inner,
             Err(e) => {
                 error!(
                     "Failed to deserialize Phoebus command: {e}\n Original message from Phoebus: {{ key: {key:?}, text: {msg_text} }}"
                 );
-                return;
+                return SyncOutcome::Skipped {
+                    reason: SkipReason::MalformedMessage,
+                };
             }
         };
         if command_msg.command != ACK_COMMAND {
             debug!(
                 "Received Phoebus command that does not need to be processed. Doing nothing.\n Original message from Phoebus: {{ key: {key:?}, text: {msg_text} }}"
             );
-            return;
+            return SyncOutcome::Ignored {
+                reason: IgnoreReason::NonSyncOperation,
+            };
         }
         if let Some(cur_state) = self.alarm_states.read().await.get(&key.device)
             && cur_state.state == State::Acknowledged
@@ -152,7 +176,7 @@ impl Monitor {
                 "Received acknowledgement command from Phoebus for device '{}', but it is already acknowledged. Doing nothing.",
                 key.device
             );
-            return;
+            return SyncOutcome::Duplicate;
         }
         self.controls_client
             .acknowledge_alarm(&key.device, &command_msg.user)
@@ -164,17 +188,23 @@ impl Monitor {
                 wake: None,
             },
         );
+        SyncOutcome::Attempted {
+            direction: SyncDirection::PhoebusToControls,
+            result: AttemptResult::Succeeded,
+        }
     }
 
     /// Handles a message from Phoebus that updates the configuration of a PV.
-    async fn process_config(&self, key: Key, msg_text: String) {
+    async fn process_config(&self, key: Key, msg_text: String) -> SyncOutcome {
         let config_msg = match serde_json::from_str::<Config>(&msg_text) {
             Ok(inner) => inner,
             Err(e) => {
                 error!(
                     "Failed to deserialize Phoebus config: {e}\n Original message from Phoebus: {{ key: {key:?}, text: {msg_text} }}"
                 );
-                return;
+                return SyncOutcome::Skipped {
+                    reason: SkipReason::MalformedMessage,
+                };
             }
         };
         let cached_metadata = self.get_pv_metadata(&key).await;
@@ -183,17 +213,24 @@ impl Monitor {
                 "Received config from Phoebus for device '{}' that matches the cached config. Doing nothing.",
                 key.device
             );
-            return;
+            return SyncOutcome::Duplicate;
         }
+        let mut outcome = SyncOutcome::Ignored {
+            reason: IgnoreReason::NonSyncOperation,
+        };
         if config_msg.enabled != cached_metadata.config.enabled {
             let updated_state = config_msg.as_cached_state();
             if updated_state.state == State::Bypassed {
-                self.handle_bypassed_alarm(&key.device, updated_state, &config_msg.user)
+                outcome = self
+                    .handle_bypassed_alarm(&key.device, updated_state, &config_msg.user)
                     .await;
             } else if updated_state.state == State::Ok {
-                self.handle_active_alarm(&key.device, updated_state).await;
+                outcome = self.handle_active_alarm(&key.device, updated_state).await;
             } else {
                 error!("Could not determine state of new config message: {config_msg:?}");
+                outcome = SyncOutcome::Skipped {
+                    reason: SkipReason::MalformedMessage,
+                };
             }
         }
         self.pv_metadata.write().await.insert(
@@ -203,6 +240,7 @@ impl Monitor {
                 ..cached_metadata
             },
         );
+        outcome
     }
 
     /// The primary logic for handling a new message from Phoebus.
@@ -210,11 +248,12 @@ impl Monitor {
     async fn process_message(&self, msg: StringMessage) {
         if let Some(key_str) = msg.key() {
             let key = Key::from(key_str);
-            match key.operation {
+            let outcome = match key.operation {
                 Operation::Command => self.process_command(key, msg.value()).await,
                 Operation::Config => self.process_config(key, msg.value()).await,
                 Operation::Other => process_other(key, msg.value()),
-            }
+            };
+            debug!("Phoebus monitor outcome: {outcome:?}");
         } else {
             error!(
                 "Got message with no key. There is a problem with the pub-sub crate or with the messages in the Phoebus Kafka.\n Message: {msg:?}"
@@ -254,8 +293,11 @@ fn handle_already_active(device: &str) {
 }
 
 /// Handles when a message is not a command or a config.
-fn process_other(key: Key, msg_text: String) {
+fn process_other(key: Key, msg_text: String) -> SyncOutcome {
     debug!(
-        "Received Phoebus message that is not a config or a command. Doing nothing.\n Original message from Phoebus: {{ key: {key:?}, text: {msg_text} }}"
-    )
+        "Received Phoebus message that is not a config or a command. Treating it as non-sync Phoebus noise and doing nothing.\n Original message from Phoebus: {{ key: {key:?}, text: {msg_text} }}"
+    );
+    SyncOutcome::Ignored {
+        reason: IgnoreReason::NonSyncPhoebusMessage,
+    }
 }

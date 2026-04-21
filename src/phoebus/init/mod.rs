@@ -3,7 +3,7 @@
 //! Contains the logic for reading the existing values out of the Phoebus alarms topics on startup.
 
 use crate::models::{
-    AlarmStateCache, CachedState, PvCache,
+    AlarmStateCache, CachedState, HydrationSource, IgnoreReason, PvCache, SyncOutcome,
     alarm::status::State,
     phoebus::{Config, Key, Operation, PvMetadata},
 };
@@ -15,6 +15,9 @@ use tracing::{debug, error, info, warn};
 mod tests;
 
 /// Populates the [`AlarmStateCache`] and [`PvCache`] with the initial read of all messages in each configured Phoebus topic.
+///
+/// Startup hydration is intentionally approximate. It is used to discover which devices Phoebus knows about and to seed
+/// the latest observed bypass/snooze-related state for those in-scope devices.
 pub async fn get_existing_messages_from_phoebus<SNAP: Snapshot>(
     phoebus_host: String,
     topics: Vec<String>,
@@ -44,10 +47,8 @@ async fn get_existing_messages<SNAP: Snapshot>(
 
 /// Iterates through the [`Message`]s and determines whether they're instances of a [`Config`] record.
 ///
-/// If so, [`handle_config`] is invoked to extract the latest configuration data for that PV.
-///
-/// If not, [`handle_state`] is invoked to attempt to extract the latest state. Only works if the message
-/// happens to be a valid instance of Phoebus' `state` record with a `severity` field.
+/// Config records define in-scope devices and provide the best startup evidence for bypass/snooze state.
+/// Other message classes may still contribute coarse observed state, but they do not define scope.
 async fn populate_caches(
     configs_and_states: Vec<StringMessage>,
     topic: String,
@@ -69,11 +70,12 @@ async fn populate_caches(
             }
         };
         let key = Key::from(msg_key);
-        if key.operation == Operation::Config {
-            handle_config(&topic, state_cache, pv_cache, key, message.value()).await;
+        let outcome = if key.operation == Operation::Config {
+            handle_config(&topic, state_cache, pv_cache, key, message.value()).await
         } else {
-            handle_state(state_cache, key, message.value()).await;
-        }
+            handle_state(state_cache, key, message.value()).await
+        };
+        debug!("Startup hydration outcome: {outcome:?}");
     }
 }
 
@@ -85,7 +87,7 @@ async fn handle_config(
     pv_cache: &PvCache,
     key: Key,
     value: String,
-) {
+) -> SyncOutcome {
     let config = match serde_json::from_str::<Config>(&value) {
         Ok(c) => c,
         Err(e) => {
@@ -93,7 +95,9 @@ async fn handle_config(
                 "Failed deserializing config message: {e}\n Tried deserializing: {}",
                 value
             );
-            return;
+            return SyncOutcome::Ignored {
+                reason: IgnoreReason::NonSyncPhoebusMessage,
+            };
         }
     };
     let alarm_state = config.as_cached_state();
@@ -109,12 +113,17 @@ async fn handle_config(
             phoebus_topic: topic.to_string(),
         },
     );
+    SyncOutcome::Hydrated {
+        source: HydrationSource::PhoebusConfig,
+    }
 }
 
 /// Treats the provided `value` as a JSON string representing a Phoebus `state` message.
 /// Attempts to read the `severity` field and map it to a [`State`] value.
 /// Updates [`AlarmStateCache`] with the result.
-async fn handle_state(state_cache: &AlarmStateCache, key: Key, value: String) {
+///
+/// These state messages do not define scope. They are only used as coarse startup evidence for already-known or eventually-known devices.
+async fn handle_state(state_cache: &AlarmStateCache, key: Key, value: String) -> SyncOutcome {
     let json_opt = serde_json::from_str::<Value>(&value).ok();
     match json_opt.and_then(|json| {
         json.get("severity")
@@ -136,7 +145,15 @@ async fn handle_state(state_cache: &AlarmStateCache, key: Key, value: String) {
                 .write()
                 .await
                 .insert(key.device.clone(), CachedState { state, wake: None });
+            SyncOutcome::Hydrated {
+                source: HydrationSource::PhoebusState,
+            }
         }
-        None => debug!("Could not match any fields from {value}."),
+        None => {
+            debug!("Could not match any fields from {value}.");
+            SyncOutcome::Ignored {
+                reason: IgnoreReason::NonSyncPhoebusMessage,
+            }
+        }
     }
 }

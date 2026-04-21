@@ -64,10 +64,13 @@ async fn should_not_sync_messages_without_keys_after_init() {
 }
 
 #[tokio::test]
+#[tracing_test::traced_test]
 async fn should_sync_valid_acknowledge_commands() {
+    let sync_config = get_mock_sync_config_salted();
+    let phoebus_topic = sync_config.phoebus_topics[0].clone();
     let test_instance = TestRunner::<StringMessage, String, SyncImpl>::check_when(
         MessageOrigin::PhoebusCommand,
-        None,
+        Some(sync_config),
     )
     .await;
     let sync = &test_instance.sync;
@@ -86,13 +89,16 @@ async fn should_sync_valid_acknowledge_commands() {
 
     test_instance
         .has(message)
-        .results_in(async || {
-            alarm_states
-                .read()
-                .await
-                .get("MyDevice")
-                .is_some_and(|state| state.state == State::Acknowledged)
-        })
+        .after_init_results_in(
+            async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
+            async || {
+                alarm_states
+                    .read()
+                    .await
+                    .get("MyDevice")
+                    .is_some_and(|state| state.state == State::Acknowledged)
+            },
+        )
         .await
         .expect("The alarm state was not set to 'Acknowledged'")
 }
@@ -105,12 +111,20 @@ async fn should_not_sync_unparseable_command_messages() {
         String::from("{ \"fakeKey\": \"Can't be parsed to a Command object\" }"),
     );
 
-    TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::PhoebusCommand, None)
-        .await
-        .has(message)
-        .results_in(async || logs_contain("Failed to deserialize Phoebus command"))
-        .await
-        .expect("The expected log message was never recorded");
+    let sync_config = get_mock_sync_config_salted();
+    let phoebus_topic = sync_config.phoebus_topics[0].clone();
+    TestRunner::<StringMessage, String, SyncImpl>::check_when(
+        MessageOrigin::PhoebusCommand,
+        Some(sync_config),
+    )
+    .await
+    .has(message)
+    .after_init_results_in(
+        async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
+        async || logs_contain("Failed to deserialize Phoebus command"),
+    )
+    .await
+    .expect("The expected log message was never recorded");
 }
 
 #[tokio::test]
@@ -126,24 +140,34 @@ async fn should_not_sync_invalid_commands() {
         serde_json::to_string(&command).unwrap(),
     );
 
-    TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::PhoebusCommand, None)
-        .await
-        .has(message)
-        .results_in(async || {
+    let sync_config = get_mock_sync_config_salted();
+    let phoebus_topic = sync_config.phoebus_topics[0].clone();
+    TestRunner::<StringMessage, String, SyncImpl>::check_when(
+        MessageOrigin::PhoebusCommand,
+        Some(sync_config),
+    )
+    .await
+    .has(message)
+    .after_init_results_in(
+        async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
+        async || {
             logs_contain(
                 "Received Phoebus command that does not need to be processed. Doing nothing.",
             )
-        })
-        .await
-        .expect("The expected log message was never recorded");
+        },
+    )
+    .await
+    .expect("The expected log message was never recorded");
 }
 
 #[tokio::test]
 #[tracing_test::traced_test]
 async fn should_not_sync_already_synced_commands() {
+    let sync_config = get_mock_sync_config_salted();
+    let phoebus_topic = sync_config.phoebus_topics[0].clone();
     let test_instance = TestRunner::<StringMessage, String, SyncImpl>::check_when(
         MessageOrigin::PhoebusCommand,
-        None,
+        Some(sync_config),
     )
     .await;
     let sync = &test_instance.sync;
@@ -165,14 +189,18 @@ async fn should_not_sync_already_synced_commands() {
         serde_json::to_string(&command).unwrap(),
     );
 
-    test_instance.has(message)
-            .results_in(async || {
+    test_instance
+        .has(message)
+        .after_init_results_in(
+            async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
+            async || {
                 logs_contain(
                     "Received acknowledgement command from Phoebus for device 'MyDevice', but it is already acknowledged. Doing nothing.",
                 )
-            })
-            .await
-            .expect("The expected log message was never recorded");
+            },
+        )
+        .await
+        .expect("The expected log message was never recorded");
 }
 
 #[tokio::test]
@@ -442,13 +470,17 @@ async fn should_not_sync_duplicated_config() {
         serde_json::to_string(&config).unwrap(),
     );
     test_instance
-            .has(message)
-            .after_init_results_in(
-                async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-                async || logs_contain("Received config from Phoebus for device 'MyDevice' that matches the cached config. Doing nothing."),
-            )
-            .await
-            .expect("The expected log message was not detected.");
+        .has(message)
+        .after_init_results_in(
+            async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
+            async || {
+                logs_contain(
+                    "Received config from Phoebus for device 'MyDevice' that matches the cached config. Doing nothing.",
+                )
+            },
+        )
+        .await
+        .expect("The expected log message was not detected.");
 }
 
 #[tokio::test]
@@ -477,10 +509,14 @@ async fn should_not_sync_unexpected_enabled_states() {
         serde_json::to_string(&config).unwrap(),
     );
     test_instance
-            .has(message)
-            .results_in(async || logs_contain("Could not parse the enabled state of a Phoebus config message to either a date or a bool."))
-            .await
-            .expect("The expected log message was not detected.");
+        .has(message)
+        .results_in(async || {
+            logs_contain(
+                "Could not parse the enabled state of a Phoebus config message to either a date or a bool.",
+            )
+        })
+        .await
+        .expect("The expected log message was not detected.");
 }
 
 #[tokio::test]
@@ -518,13 +554,18 @@ async fn should_not_sync_already_active_config() {
         Some(String::from("config:path/to/MyDevice")),
         serde_json::to_string(&config).unwrap(),
     );
-    test_instance.has(message)
-            .after_init_results_in(
-                async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-                async || logs_contain("Received configuration update from Phoebus to activate alarm for device 'MyDevice', but it is already active. Updating cached config only.")
-            )
-            .await
-            .expect("The expected log message was not detected.");
+    test_instance
+        .has(message)
+        .after_init_results_in(
+            async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
+            async || {
+                logs_contain(
+                    "Received configuration update from Phoebus to activate alarm for device 'MyDevice', but it is already active. Updating cached config only.",
+                )
+            },
+        )
+        .await
+        .expect("The expected log message was not detected.");
 }
 
 #[tokio::test]
@@ -563,13 +604,18 @@ async fn should_not_sync_already_bypassed_config() {
         Some(String::from("config:path/to/MyDevice")),
         serde_json::to_string(&config).unwrap(),
     );
-    test_instance.has(message)
-            .after_init_results_in(
-                async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-                async || logs_contain("Received configuration update from Phoebus to bypass alarm for device 'MyDevice', but it is already bypassed. Updating cached PV config only.")
-            )
-            .await
-            .expect("The expected log message was not detected.");
+    test_instance
+        .has(message)
+        .after_init_results_in(
+            async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
+            async || {
+                logs_contain(
+                    "Received configuration update from Phoebus to bypass alarm for device 'MyDevice', but it is already bypassed. Updating cached PV config only.",
+                )
+            },
+        )
+        .await
+        .expect("The expected log message was not detected.");
 }
 
 #[tokio::test]
@@ -591,7 +637,7 @@ async fn should_not_sync_unknown_operations() {
         async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
         async || {
             logs_contain(
-                "Received Phoebus message that is not a config or a command. Doing nothing.",
+                "Received Phoebus message that is not a config or a command. Treating it as non-sync Phoebus noise and doing nothing.",
             )
         },
     )

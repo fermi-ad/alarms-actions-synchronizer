@@ -5,7 +5,10 @@
 use crate::models::alarm::Status;
 use crate::models::alarm::status::Source;
 use crate::models::phoebus::{Operation, PvMetadata};
-use crate::models::{AlarmStateCache, PvCache, Synchronizer, SynchronizerConfig};
+use crate::models::{
+    AlarmStateCache, AttemptResult, IgnoreReason, OutOfScopeReason, PvCache, SkipReason,
+    SyncDirection, SyncOutcome, Synchronizer, SynchronizerConfig,
+};
 use crate::utils::get_command_topic;
 use rust_pubsub_lib::{Message, PubSubError, Publisher, Snapshot, StringMessage, Subscriber};
 use std::collections::HashMap;
@@ -52,20 +55,25 @@ impl<P: Publisher> SyncImpl<P> {
             })
     }
 
-    /// Extracts the PV metadata record for the provided `device`
+    /// Extracts the PV metadata record for the provided `device`.
+    ///
+    /// The presence of Phoebus metadata determines whether an EPICS device is in scope for synchronization.
     async fn get_pv_metadata(&self, device: &str) -> Option<PvMetadata> {
         self.pv_metadata.read().await.get(device).cloned() // Get our own copy so we can drop the reference to the shared cache
     }
 
     /// The path to follow when the operation for the `controls_alarm` is one that does not reqiure synchronization.
     /// Simply logs a debug record and updates the cache.
-    async fn handle_non_sync_operation(&self, controls_alarm: &Status) {
+    async fn handle_non_sync_operation(&self, controls_alarm: &Status) -> SyncOutcome {
         debug!(
-            "Received Controls alarm update for device {} with new state {:?} that does not require synchronization. Updating cache and doing nothing.",
+            "Received Controls alarm update for device {} with new state {:?} that does not require synchronization. Recording latest observed state for loop prevention and doing nothing.",
             controls_alarm.device,
             controls_alarm.state()
         );
         self.update_cache(controls_alarm).await;
+        SyncOutcome::Ignored {
+            reason: IgnoreReason::NonSyncOperation,
+        }
     }
 
     /// Loops over elements of the [`Stream`] and processes them. Detects when a cancel has been invoked and terminates the process.
@@ -90,18 +98,16 @@ impl<P: Publisher> SyncImpl<P> {
     }
 
     /// The general steps for processing an EPICS device with updated state.
-    async fn process_epics_message(&self, controls_alarm: &Status) {
+    async fn process_epics_message(&self, controls_alarm: &Status) -> SyncOutcome {
         let operation = transform::state_to_operation(controls_alarm.state());
         if operation == Operation::Other {
-            self.handle_non_sync_operation(controls_alarm).await;
-            return;
+            return self.handle_non_sync_operation(controls_alarm).await;
         }
 
         let pv_metadata = match self.get_pv_metadata(&controls_alarm.device).await {
             Some(metadata) => metadata,
             None => {
-                handle_missing_metadata(&controls_alarm.device);
-                return;
+                return handle_missing_metadata(&controls_alarm.device);
             }
         };
 
@@ -111,7 +117,10 @@ impl<P: Publisher> SyncImpl<P> {
                 error!(
                     "Could not find a relevant topic for operation '{operation:?}'.\n Message from Controls: {controls_alarm:?}"
                 );
-                return;
+                self.update_cache(controls_alarm).await;
+                return SyncOutcome::Skipped {
+                    reason: SkipReason::MissingTopic,
+                };
             }
         };
 
@@ -122,16 +131,22 @@ impl<P: Publisher> SyncImpl<P> {
                 error!(
                     "Unable to create message to send to Phoebus.\n Cause: {err}\n Message from Controls: {controls_alarm:?}"
                 );
-                return;
+                self.update_cache(controls_alarm).await;
+                return SyncOutcome::Skipped {
+                    reason: SkipReason::MalformedMessage,
+                };
             }
         };
 
-        match self.phoebus_publishers.get(&topic) {
+        let attempt_result = match self.phoebus_publishers.get(&topic) {
             Some(publisher) => {
                 if let Err(err) = publisher.publish(message).await {
                     warn!(
                         "Failed publishing to Phoebus Kafka.\n  Cause: {err}\n Message from Controls: {controls_alarm:?}"
                     );
+                    AttemptResult::Failed
+                } else {
+                    AttemptResult::Succeeded
                 }
             }
             None => {
@@ -139,27 +154,40 @@ impl<P: Publisher> SyncImpl<P> {
                     "Received message for device with no matching Phoebus topic.\n Desired topic: {topic}\n Device: {}",
                     controls_alarm.device
                 );
+                self.update_cache(controls_alarm).await;
+                return SyncOutcome::Skipped {
+                    reason: SkipReason::MissingPublisher,
+                };
             }
         };
+
+        self.update_cache(controls_alarm).await;
+        SyncOutcome::Attempted {
+            direction: SyncDirection::ControlsToPhoebus,
+            result: attempt_result,
+        }
     }
 
     /// Consumes a [`Message`] and determines whether & where an update should be sent to Phoebus.
-    async fn process_message(&self, msg: StringMessage) -> Result<(), ()> {
+    async fn process_message(&self, msg: StringMessage) -> Result<SyncOutcome, ()> {
         let controls_alarm = deserialize_status(&msg)?;
         if self.check_cache_is_current(&controls_alarm).await {
             handle_not_stale_cached_value(controls_alarm);
-            return Ok(());
+            return Ok(SyncOutcome::Duplicate);
         }
-        if controls_alarm.source() == Source::Epics {
-            self.process_epics_message(&controls_alarm).await;
+        let outcome = if controls_alarm.source() == Source::Epics {
+            self.process_epics_message(&controls_alarm).await
         } else {
             debug!(
-                "Received ACNET device {}. Updating cache and doing nothing.",
+                "Received ACNET device {}. Recording latest observed state for loop prevention and doing nothing.",
                 controls_alarm.device
             );
-        }
-        self.update_cache(&controls_alarm).await;
-        Ok(())
+            self.update_cache(&controls_alarm).await;
+            SyncOutcome::Ignored {
+                reason: IgnoreReason::NonEpicsSource,
+            }
+        };
+        Ok(outcome)
     }
 
     /// Extracts the [`Message`] from the item retrieved from the Controls stream, or handles any errors.
@@ -237,16 +265,19 @@ fn deserialize_status(msg: &StringMessage) -> Result<Status, ()> {
 }
 
 /// Logs a warning that the provided EPICS device does not have any cached PV metadata, so could not be synced to Phoebus.
-fn handle_missing_metadata(device: &str) {
+fn handle_missing_metadata(device: &str) -> SyncOutcome {
     warn!(
-        "Received message for EPICS device '{device}' with no matching PV metadata. This likely means the message is an alarm update for an EPICS PV that the synchronizer has not yet received metadata for from Phoebus. Message will be dropped."
+        "Received message for EPICS device '{device}' with no matching PV metadata. Treating device as out of scope until Phoebus configuration metadata is discovered. Message will be dropped."
     );
+    SyncOutcome::OutOfScope {
+        reason: OutOfScopeReason::MissingPhoebusMetadata,
+    }
 }
 
 /// Logs a message that the `controls_alarm` state is already up to date, so no action will be taken.
 fn handle_not_stale_cached_value(controls_alarm: Status) {
     debug!(
-        "Received alarm update for device {} with unchanged state '{:?}'. Doing nothing.",
+        "Received alarm update for device {} with unchanged state '{:?}'. Treating message as a duplicate of the latest observed state and doing nothing.",
         controls_alarm.device,
         controls_alarm.state()
     );

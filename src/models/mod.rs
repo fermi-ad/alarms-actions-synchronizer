@@ -24,15 +24,110 @@ mod tests;
 pub const ACK_COMMAND: &str = "acknowledge";
 
 /// Alias for the atomic cache of alarm state data, shared between the two synchronizing processes.
+///
+/// This cache is the synchronizer's local memory of the latest in-scope alarm-handling state it has
+/// observed for each EPICS device. It is intentionally used for duplicate suppression and loop avoidance,
+/// even when an outbound publish or RPC fails.
+///
+/// The values in this cache therefore mean "latest observed by the synchronizer" rather than
+/// "latest confirmed mirrored to the opposite system".
 pub type AlarmStateCache = Arc<RwLock<HashMap<String, CachedState>>>;
 
 /// Alias for the atomic cache of PV metadata shared between the two synchronizing processes.
+///
+/// This cache defines which EPICS devices are currently in scope for synchronization. A device becomes
+/// eligible for synchronization only after Phoebus emits configuration metadata for it, whether during
+/// startup hydration or later runtime monitoring.
 pub type PvCache = Arc<RwLock<HashMap<String, phoebus::PvMetadata>>>;
+
+/// Structured summary of what happened while processing a synchronization-relevant event.
+///
+/// The variants are designed to distinguish duplicate suppression, out-of-scope filtering, skipped work,
+/// attempted propagation, and startup hydration. Stage 1 uses this model to make synchronization semantics
+/// explicit without yet changing the existing anti-loop cache-write policy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SyncOutcome {
+    /// The inbound value matched the synchronizer's latest observed state, so nothing was mirrored.
+    Duplicate,
+
+    /// The message was intentionally ignored because it carries no synchronization-relevant user intent.
+    Ignored { reason: IgnoreReason },
+
+    /// The device is currently out of scope because Phoebus configuration metadata is not known.
+    OutOfScope { reason: OutOfScopeReason },
+
+    /// A synchronization attempt was skipped even though the message was otherwise relevant.
+    Skipped { reason: SkipReason },
+
+    /// The synchronizer attempted propagation to the opposite system.
+    Attempted {
+        direction: SyncDirection,
+        result: AttemptResult,
+    },
+
+    /// State or metadata was hydrated from startup evidence rather than runtime user intent.
+    Hydrated { source: HydrationSource },
+}
+
+/// The direction in which synchronization was attempted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncDirection {
+    ControlsToPhoebus,
+    PhoebusToControls,
+}
+
+/// Why an inbound message was ignored without any synchronization attempt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IgnoreReason {
+    /// The device belongs to a non-EPICS source and is outside this synchronizer's mission.
+    NonEpicsSource,
+    /// The message class is part of Phoebus traffic but does not express user intent this service mirrors.
+    NonSyncOperation,
+    /// A Phoebus message class was recognized as server-state or otherwise irrelevant noise.
+    NonSyncPhoebusMessage,
+}
+
+/// Why a device was treated as out of scope.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OutOfScopeReason {
+    /// No Phoebus configuration metadata is known for this EPICS device yet.
+    MissingPhoebusMetadata,
+}
+
+/// Why a synchronization-relevant action was skipped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SkipReason {
+    /// No topic could be resolved for the requested Phoebus operation.
+    MissingTopic,
+    /// No publisher/client capability existed for the resolved destination.
+    MissingPublisher,
+    /// An upstream API or feature is intentionally unavailable in this repository.
+    UnsupportedCapability,
+    /// Input was malformed for the expected message class.
+    MalformedMessage,
+}
+
+/// Result of attempting synchronization work.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AttemptResult {
+    Succeeded,
+    Failed,
+}
+
+/// Provenance for cache entries created during startup hydration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HydrationSource {
+    PhoebusConfig,
+    PhoebusState,
+}
 
 /// Encapsulates the latest state information about an alarm.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CachedState {
     /// The latest [`State`] the sync service has recorded for the alarm.
+    ///
+    /// This is the latest in-scope state the synchronizer has observed locally, not necessarily the latest
+    /// state that has been confirmed as mirrored successfully to the opposite system.
     pub state: State,
     /// If the alarm is snoozed, this field will be set to [`Some`] with the reenablement time, and
     /// the [`state`](Self::state) field will be set to [`Bypassed`](State::Bypassed).

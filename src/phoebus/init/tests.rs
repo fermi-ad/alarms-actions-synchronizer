@@ -101,6 +101,12 @@ async fn should_parse_existing_messages() {
     assert!(logs_contain("Could not match any fields from "));
     assert!(logs_contain("Failed deserializing config message: "));
     assert!(logs_contain("No key provided on config/state message: "));
+    assert!(logs_contain(
+        "Startup hydration outcome: Hydrated { source: PhoebusConfig }"
+    ));
+    assert!(logs_contain(
+        "Startup hydration outcome: Hydrated { source: PhoebusState }"
+    ));
 
     let state_reader = alarm_cache.read().await;
     let pv_reader = pv_cache.read().await;

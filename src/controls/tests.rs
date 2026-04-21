@@ -80,7 +80,7 @@ async fn should_not_sync_corrupted_controls_message() {
 
 #[tokio::test]
 #[tracing_test::traced_test]
-async fn should_not_sync_unmapped_epics_pv() {
+async fn should_treat_epics_device_without_phoebus_metadata_as_out_of_scope() {
     let mut status = Status::default();
     status.set_state(State::Bypassed);
     status.set_source(Source::Epics);
@@ -97,7 +97,7 @@ async fn should_not_sync_unmapped_epics_pv() {
     test_instance
         .has(message)
         .results_in(async || {
-            logs_contain("Received message for EPICS device '' with no matching PV metadata.")
+            logs_contain("Treating device as out of scope until Phoebus configuration metadata is discovered")
         })
         .await
         .expect("Did not detect expected log message.");
@@ -132,15 +132,15 @@ async fn should_not_sync_when_alarm_state_is_not_syncable() {
     test_instance
         .has(message)
         .results_in(async || {
-            logs_contain("Received Controls alarm update for device  with new state Ok that does not require synchronization. Updating cache and doing nothing.")
-         })
-         .await
-         .expect("Did not detect expected log message.");
+            logs_contain("Recording latest observed state for loop prevention and doing nothing")
+        })
+        .await
+        .expect("Did not detect expected log message.");
 }
 
 #[tokio::test]
 #[tracing_test::traced_test]
-async fn should_not_sync_when_no_change_in_alarm_state() {
+async fn should_treat_unchanged_state_as_duplicate() {
     let test_instance = get_salted_test_instance().await;
     let sync = &test_instance.sync;
 
@@ -166,7 +166,7 @@ async fn should_not_sync_when_no_change_in_alarm_state() {
         .has(message)
         .results_in(async || {
             logs_contain(
-                "Received alarm update for device  with unchanged state 'Unknown'. Doing nothing.",
+                "Treating message as a duplicate of the latest observed state and doing nothing.",
             )
         })
         .await
@@ -210,7 +210,7 @@ async fn should_not_sync_when_no_publisher_for_topic() {
 
 #[tokio::test]
 #[tracing_test::traced_test]
-async fn should_not_transmit_acnet_device() {
+async fn should_record_acnet_device_without_transmitting() {
     let mut status = Status::default();
     status.set_source(Source::Analog);
 
@@ -220,7 +220,7 @@ async fn should_not_transmit_acnet_device() {
         .await
         .has(message)
         .results_in(async || {
-            logs_contain("Received ACNET device . Updating cache and doing nothing.")
+            logs_contain("Recording latest observed state for loop prevention and doing nothing")
         })
         .await
         .expect("Did not detect expected log message.");
