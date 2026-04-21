@@ -7,10 +7,11 @@
 use super::*;
 use crate::models::{Synchronizer, SynchronizerConfig};
 use rust_pubsub_lib::{
-    Message, Publisher,
-    kafka_impl::{KafkaPublisher, KafkaSnapshot, KafkaSubscriber, testing_utils::Harness},
+    KafkaPublisher, KafkaSnapshot, KafkaSubscriber, KafkaTestHarness, Message, Publisher,
 };
-use std::{error::Error, time::Duration};
+use std::error::Error;
+use std::marker::PhantomData;
+use std::time::Duration;
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -58,19 +59,23 @@ pub fn get_mock_sync_config_salted() -> SynchronizerConfig {
 }
 
 /// A helper tool that simulates a [`Synchronizer`] receiving the provided [`Message`] and checks that the expected behavior ensues.
-pub struct TestRunner<T>
+pub struct TestRunner<M, N, T>
 where
+    M: Message<N>,
     T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static,
 {
     cancel_token: CancellationToken,
-    /// The [`Harness`] containing the location of the test Kafka Cluster via its [`host()`](Harness::host) method.
-    pub harness: Harness,
-    message: Option<Message>,
+    /// The [`KafkaTestHarness`] containing the location of the test Kafka Cluster via its [`host()`](KafkaTestHarness::host) method.
+    pub harness: KafkaTestHarness,
+    message: Option<M>,
+    _message_type: PhantomData<N>,
     send_topic: String,
     /// The [`Synchronizer`] instance being tested.
     pub sync: T,
 }
-impl<T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static> TestRunner<T> {
+impl<M: Message<N>, N, T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static>
+    TestRunner<M, N, T>
+{
     /// Generates a [`TestInstance`] for a [`Synchronizer`] that listens to messages from [`MessageOrigin`].
     ///
     /// A [`Message`] is simulated to be sent on the appropriate topic by calling [`has`](Self::has).
@@ -86,23 +91,24 @@ impl<T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static> T
 
         let (send_topic, all_topics) = prioritize_topics(origin, &config);
 
-        let harness = Harness::with_topics(all_topics).await;
+        let harness = KafkaTestHarness::with_topics(all_topics).await;
 
-        config.controls_host = harness.host();
-        config.phoebus_host = harness.host();
+        config.controls_host = harness.host().await;
+        config.phoebus_host = config.controls_host.clone();
         let sync = T::new(config);
 
         TestRunner {
             cancel_token,
             harness,
             message: None,
+            _message_type: PhantomData,
             send_topic,
             sync,
         }
     }
 
     /// Supplies the [`Message`] to send that kicks off the test case.
-    pub fn has(mut self, message: Message) -> Self {
+    pub fn has(mut self, message: M) -> Self {
         self.message = Some(message);
         self
     }
@@ -195,12 +201,12 @@ fn prioritize_topics(origin: MessageOrigin, config: &SynchronizerConfig) -> (Str
 }
 
 /// Produces the specified [`Message`] on the [`Harness`]'s host and topic.
-async fn send_test_message(
-    harness: &Harness,
-    message: Message,
+async fn send_test_message<N, M: Message<N>>(
+    harness: &KafkaTestHarness,
+    message: M,
     send_topic: String,
 ) -> Result<(), Box<dyn Error>> {
-    let sender = KafkaPublisher::new(harness.host(), send_topic.clone());
+    let sender = KafkaPublisher::new(harness.host().await, send_topic.clone());
     sender.publish(message).await?;
     info!("message sent to {}", send_topic);
     Ok(())
@@ -208,9 +214,9 @@ async fn send_test_message(
 
 /// Helper method that sends the message to induce the behavior being tested and checks to see
 ///  whether the desired outcome was observed.
-async fn do_test(
-    harness: Harness,
-    message: Message,
+async fn do_test<N, M: Message<N>>(
+    harness: KafkaTestHarness,
+    message: M,
     send_topic: String,
     condition: impl AsyncFnMut() -> bool,
 ) -> Result<(), Box<dyn Error>> {

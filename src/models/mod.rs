@@ -5,11 +5,13 @@
 pub use common::alarm;
 pub use google::protobuf as generated;
 
-use alarm::{Status, status::State};
+use alarm::Status;
+use alarm::status::State;
 use chrono::{DateTime, TimeZone, Utc};
 use generated::Timestamp;
 use rust_pubsub_lib::{Publisher, Snapshot, Subscriber};
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 

@@ -5,16 +5,16 @@
 use models::{Synchronizer, SynchronizerConfig};
 use rust_env_var_lib::env_var;
 use rust_pubsub_lib::{
-    Publisher, Snapshot, Subscriber,
-    kafka_impl::{KafkaPublisher, KafkaSnapshot, KafkaSubscriber},
+    KafkaPublisher, KafkaSnapshot, KafkaSubscriber, Publisher, Snapshot, Subscriber,
 };
-use tokio::{
-    signal,
-    task::{JoinError, JoinHandle},
-    try_join,
-};
+use tokio::signal;
+use tokio::task::{JoinError, JoinHandle};
+use tokio::try_join;
 use tokio_util::sync::CancellationToken;
-use tracing_subscriber::{Registry, filter::EnvFilter, fmt::layer, layer::SubscriberExt};
+use tracing_subscriber::Registry;
+use tracing_subscriber::filter::EnvFilter;
+use tracing_subscriber::fmt::layer;
+use tracing_subscriber::layer::SubscriberExt;
 
 mod controls;
 mod models;

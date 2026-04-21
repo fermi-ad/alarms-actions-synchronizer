@@ -7,7 +7,7 @@ use crate::models::{
     alarm::status::State,
     phoebus::{Config, Key, Operation, PvMetadata},
 };
-use rust_pubsub_lib::{Message, Snapshot};
+use rust_pubsub_lib::{Message, Snapshot, StringMessage};
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
@@ -32,7 +32,7 @@ pub async fn get_existing_messages_from_phoebus<SNAP: Snapshot>(
 async fn get_existing_messages<SNAP: Snapshot>(
     phoebus_host: String,
     topic: String,
-) -> Vec<Message> {
+) -> Vec<StringMessage> {
     match SNAP::get(phoebus_host, topic).await {
         Ok(messages) => messages,
         Err(e) => {
@@ -49,7 +49,7 @@ async fn get_existing_messages<SNAP: Snapshot>(
 /// If not, [`handle_state`] is invoked to attempt to extract the latest state. Only works if the message
 /// happens to be a valid instance of Phoebus' `state` record with a `severity` field.
 async fn populate_caches(
-    configs_and_states: Vec<Message>,
+    configs_and_states: Vec<StringMessage>,
     topic: String,
     state_cache: &AlarmStateCache,
     pv_cache: &PvCache,
@@ -58,18 +58,21 @@ async fn populate_caches(
         info!("Topic {topic} has no messages");
     }
     for message in configs_and_states {
-        let msg_key = match message.key {
+        let msg_key = match message.key() {
             Some(k) => k,
             None => {
-                warn!("No key provided on config/state message: {}", message.value);
+                warn!(
+                    "No key provided on config/state message: {}",
+                    message.value()
+                );
                 continue;
             }
         };
         let key = Key::from(msg_key);
         if key.operation == Operation::Config {
-            handle_config(&topic, state_cache, pv_cache, key, message.value).await;
+            handle_config(&topic, state_cache, pv_cache, key, message.value()).await;
         } else {
-            handle_state(state_cache, key, message.value).await;
+            handle_state(state_cache, key, message.value()).await;
         }
     }
 }

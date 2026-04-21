@@ -6,7 +6,8 @@ use super::CachedState;
 use chrono::DateTime;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use std::{collections::HashMap, fmt::Display};
+use std::collections::HashMap;
+use std::fmt::Display;
 use tracing::error;
 
 #[cfg(test)]

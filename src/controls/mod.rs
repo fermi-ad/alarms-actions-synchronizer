@@ -2,16 +2,14 @@
 //!
 //! Contains the [`Synchronizer`] for pushing Controls commands and configs into the Phoebus alarm server.
 
-use crate::{
-    models::{
-        AlarmStateCache, PvCache, Synchronizer, SynchronizerConfig,
-        alarm::{Status, status::Source},
-        phoebus::{Operation, PvMetadata},
-    },
-    utils::get_command_topic,
-};
-use rust_pubsub_lib::{Message, PubSubError, Publisher, Snapshot, Subscriber};
-use std::{collections::HashMap, time::Duration};
+use crate::models::alarm::Status;
+use crate::models::alarm::status::Source;
+use crate::models::phoebus::{Operation, PvMetadata};
+use crate::models::{AlarmStateCache, PvCache, Synchronizer, SynchronizerConfig};
+use crate::utils::get_command_topic;
+use rust_pubsub_lib::{Message, PubSubError, Publisher, Snapshot, StringMessage, Subscriber};
+use std::collections::HashMap;
+use std::time::Duration;
 use tokio::time::sleep;
 use tokio_stream::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
@@ -73,7 +71,7 @@ impl<P: Publisher> SyncImpl<P> {
     /// Loops over elements of the [`Stream`] and processes them. Detects when a cancel has been invoked and terminates the process.
     async fn monitor(
         &self,
-        mut controls_stream: impl Stream<Item = Result<Message, PubSubError>> + Unpin + Send,
+        mut controls_stream: impl Stream<Item = Result<StringMessage, PubSubError>> + Unpin + Send,
     ) {
         loop {
             tokio::select! {
@@ -146,7 +144,7 @@ impl<P: Publisher> SyncImpl<P> {
     }
 
     /// Consumes a [`Message`] and determines whether & where an update should be sent to Phoebus.
-    async fn process_message(&self, msg: Message) -> Result<(), ()> {
+    async fn process_message(&self, msg: StringMessage) -> Result<(), ()> {
         let controls_alarm = deserialize_status(&msg)?;
         if self.check_cache_is_current(&controls_alarm).await {
             handle_not_stale_cached_value(controls_alarm);
@@ -165,7 +163,7 @@ impl<P: Publisher> SyncImpl<P> {
     }
 
     /// Extracts the [`Message`] from the item retrieved from the Controls stream, or handles any errors.
-    async fn process_stream_item(&self, item: Result<Message, PubSubError>) {
+    async fn process_stream_item(&self, item: Result<StringMessage, PubSubError>) {
         match item {
             Ok(msg) => {
                 let _ = self.process_message(msg).await;
@@ -214,7 +212,7 @@ impl<P: Publisher + Send + Sync, S: Subscriber + Send + Sync> Synchronizer<P, S>
         info!("Starting Controls-to-Phoebus Synchronizer");
         loop {
             let mut controls_sub = S::new(self.controls_host.clone(), self.controls_topic.clone());
-            match controls_sub.get_stream() {
+            match controls_sub.get_stream().await {
                 Ok(controls_stream) => self.monitor(controls_stream).await,
                 Err(e) => error!("Failed to get Controls alarms stream: {e}"),
             }
@@ -229,11 +227,11 @@ impl<P: Publisher + Send + Sync, S: Subscriber + Send + Sync> Synchronizer<P, S>
 }
 
 /// The logic for transforming the value of the provided [`Message`] into a [`Status`].
-fn deserialize_status(msg: &Message) -> Result<Status, ()> {
-    serde_json::from_str::<Status>(&msg.value).map_err(|e| {
+fn deserialize_status(msg: &StringMessage) -> Result<Status, ()> {
+    serde_json::from_str::<Status>(&msg.value()).map_err(|e| {
         error!(
             "Failed to deserialize Controls message value: {e}\n Message value: {}",
-            msg.value
+            msg.value()
         )
     })
 }

@@ -3,16 +3,13 @@
 //! Contains various helper methods for transforming a Controls [`Status`] into an
 //! appropriate [`Message`] for Phoebus.
 
-use crate::{
-    models::{
-        ACK_COMMAND,
-        alarm::{Status, status::State},
-        phoebus::{Command, Config, Operation, PvMetadata},
-    },
-    utils::get_command_topic,
-};
+use crate::models::ACK_COMMAND;
+use crate::models::alarm::Status;
+use crate::models::alarm::status::State;
+use crate::models::phoebus::{Command, Config, Operation, PvMetadata};
+use crate::utils::get_command_topic;
 use chrono::{TimeZone, Utc};
-use rust_pubsub_lib::Message;
+use rust_pubsub_lib::{Message, StringMessage};
 
 #[cfg(test)]
 mod tests;
@@ -25,7 +22,7 @@ pub fn controls_to_phoebus(
     controls_alarm: &Status,
     operation: Operation,
     metadata: &PvMetadata,
-) -> Result<Message, String> {
+) -> Result<StringMessage, String> {
     let transformed_key =
         get_phoebus_key(&operation, &metadata.display_path, &controls_alarm.device);
     let transformed_value = match operation {
@@ -43,10 +40,7 @@ pub fn controls_to_phoebus(
         Operation::Other => return Err(Operation::get_err_string_for_other()),
     }
     .map_err(|e| format!("{e:?}"))?;
-    Ok(Message {
-        key: Some(transformed_key),
-        value: transformed_value,
-    })
+    Ok(StringMessage::new(Some(transformed_key), transformed_value))
 }
 
 /// Determines the appropriate Phoebus topic based on the [`Operation`] and cached [`PvMetadata`].

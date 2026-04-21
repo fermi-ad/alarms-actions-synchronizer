@@ -3,27 +3,24 @@
 //! Tests the various functions in the controls module.
 
 use super::*;
-use crate::{
-    models::{
-        ACK_COMMAND,
-        alarm::status::State,
-        phoebus::{Command, Config, PvMetadata},
-    },
-    utils::test_runner::{MessageOrigin, PHOEBUS_TOPIC, TestRunner, get_mock_sync_config_salted},
+use crate::models::ACK_COMMAND;
+use crate::models::alarm::status::State;
+use crate::models::phoebus::{Command, Config, PvMetadata};
+use crate::utils::test_runner::{
+    MessageOrigin, PHOEBUS_TOPIC, TestRunner, get_mock_sync_config_salted,
 };
-use rust_pubsub_lib::kafka_impl::{KafkaPublisher, KafkaSubscriber};
+use rust_pubsub_lib::{KafkaPublisher, KafkaSubscriber, StringMessage};
 use std::sync::Arc;
 
-async fn get_salted_test_instance() -> TestRunner<SyncImpl<KafkaPublisher>> {
-    TestRunner::<SyncImpl<KafkaPublisher>>::check_when(
-        MessageOrigin::Controls,
-        Some(get_mock_sync_config_salted()),
-    )
-    .await
+type ControlsTestRunner = TestRunner<StringMessage, String, SyncImpl<KafkaPublisher>>;
+
+async fn get_salted_test_instance() -> ControlsTestRunner {
+    ControlsTestRunner::check_when(MessageOrigin::Controls, Some(get_mock_sync_config_salted()))
+        .await
 }
 
-async fn get_test_instance() -> TestRunner<SyncImpl<KafkaPublisher>> {
-    TestRunner::<SyncImpl<KafkaPublisher>>::check_when(MessageOrigin::Controls, None).await
+async fn get_test_instance() -> ControlsTestRunner {
+    ControlsTestRunner::check_when(MessageOrigin::Controls, None).await
 }
 
 #[tokio::test]
@@ -43,16 +40,16 @@ async fn should_continue_when_no_cached_alarm_state() {
     let mut status = Status::default();
     status.set_source(Source::Epics);
     status.set_state(State::Acknowledged);
-    let message = Message {
-        key: None,
-        value: serde_json::to_string(&status).unwrap(),
-    };
+    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
     let mut receiver = KafkaSubscriber::new(
-        test_instance.harness.host(),
+        test_instance.harness.host().await,
         get_command_topic(PHOEBUS_TOPIC),
     );
-    let mut stream = receiver.get_stream().unwrap();
+    let mut stream = receiver
+        .get_stream::<String, StringMessage>()
+        .await
+        .unwrap();
 
     test_instance
         .has(message)
@@ -61,7 +58,7 @@ async fn should_continue_when_no_cached_alarm_state() {
                 .next()
                 .await
                 .unwrap()
-                .is_ok_and(|msg| msg.key.is_some_and(|k| k == "command:/"))
+                .is_ok_and(|msg| msg.key().is_some_and(|k| k == "command:/"))
         })
         .await
         .expect("Did not receive expected message");
@@ -70,10 +67,8 @@ async fn should_continue_when_no_cached_alarm_state() {
 #[tokio::test]
 #[tracing_test::traced_test]
 async fn should_not_sync_corrupted_controls_message() {
-    let message = Message {
-        key: None,
-        value: String::from("{ \"unknownKey\": \"Malformed message\" }"),
-    };
+    let message =
+        StringMessage::from_value(String::from("{ \"unknownKey\": \"Malformed message\" }"));
 
     get_test_instance()
         .await
@@ -89,10 +84,7 @@ async fn should_not_sync_unmapped_epics_pv() {
     let mut status = Status::default();
     status.set_state(State::Bypassed);
     status.set_source(Source::Epics);
-    let message = Message {
-        key: None,
-        value: serde_json::to_string(&status).unwrap(),
-    };
+    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
     status.set_state(State::Alarmed);
     let test_instance = get_test_instance().await;
@@ -135,10 +127,7 @@ async fn should_not_sync_when_alarm_state_is_not_syncable() {
         .insert(String::new(), status.clone().into());
 
     status.set_state(State::Ok);
-    let message = Message {
-        key: None,
-        value: serde_json::to_string(&status).unwrap(),
-    };
+    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
     test_instance
         .has(message)
@@ -166,10 +155,7 @@ async fn should_not_sync_when_no_change_in_alarm_state() {
 
     let mut status = Status::default();
     status.set_source(Source::Epics);
-    let message = Message {
-        key: None,
-        value: serde_json::to_string(&status).unwrap(),
-    };
+    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
     sync.alarms_states
         .write()
@@ -211,10 +197,7 @@ async fn should_not_sync_when_no_publisher_for_topic() {
         .insert(String::new(), status.clone().into());
 
     status.set_state(State::Acknowledged);
-    let message = Message {
-        key: None,
-        value: serde_json::to_string(&status).unwrap(),
-    };
+    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
     test_instance
         .has(message)
@@ -231,10 +214,7 @@ async fn should_not_transmit_acnet_device() {
     let mut status = Status::default();
     status.set_source(Source::Analog);
 
-    let message = Message {
-        key: None,
-        value: serde_json::to_string(&status).unwrap(),
-    };
+    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
     get_salted_test_instance()
         .await
@@ -249,10 +229,7 @@ async fn should_not_transmit_acnet_device() {
 #[tokio::test]
 async fn should_not_transmit_unknown_device() {
     let status = Status::default();
-    let message = Message {
-        key: None,
-        value: serde_json::to_string(&status).unwrap(),
-    };
+    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
     let test_instance = get_test_instance().await;
     let sync = &test_instance.sync;
@@ -289,10 +266,7 @@ async fn should_sync_valid_acknowledge_message() {
         .insert(String::new(), status.clone().into());
 
     status.set_state(State::Acknowledged);
-    let message = Message {
-        key: None,
-        value: serde_json::to_string(&status).unwrap(),
-    };
+    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
     let mut expected_command = Command::default();
     expected_command.command = ACK_COMMAND.to_string();
@@ -302,17 +276,21 @@ async fn should_sync_valid_acknowledge_message() {
     let expected_value = serde_json::to_string(&expected_command).unwrap();
 
     let mut receiver = KafkaSubscriber::new(
-        test_instance.harness.host(),
+        test_instance.harness.host().await,
         get_command_topic(PHOEBUS_TOPIC),
     );
-    let mut stream = receiver.get_stream().unwrap();
+    let mut stream = receiver.get_stream().await.unwrap();
 
     test_instance
         .has(message)
         .results_in(async move || {
-            stream.next().await.unwrap().is_ok_and(|received| {
-                received.key == expected_key && received.value == expected_value
-            })
+            stream
+                .next()
+                .await
+                .unwrap()
+                .is_ok_and(|received: StringMessage| {
+                    received.key() == expected_key && received.value() == expected_value
+                })
         })
         .await
         .expect("Expected message was not delivered to the expected Publisher");
@@ -341,10 +319,7 @@ async fn should_sync_valid_bypass_message() {
         .insert(String::new(), status.clone().into());
 
     status.set_state(State::Bypassed);
-    let message = Message {
-        key: None,
-        value: serde_json::to_string(&status).unwrap(),
-    };
+    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
     let mut expected_config = Config::default();
     expected_config.enabled = Some(false.to_string());
@@ -353,16 +328,22 @@ async fn should_sync_valid_bypass_message() {
     let expected_key = Some(String::from("config:/"));
     let expected_value = serde_json::to_string(&expected_config).unwrap();
 
-    let mut receiver =
-        KafkaSubscriber::new(test_instance.harness.host(), String::from(PHOEBUS_TOPIC));
-    let mut stream = receiver.get_stream().unwrap();
+    let mut receiver = KafkaSubscriber::new(
+        test_instance.harness.host().await,
+        String::from(PHOEBUS_TOPIC),
+    );
+    let mut stream = receiver.get_stream().await.unwrap();
 
     test_instance
         .has(message)
         .results_in(async move || {
-            stream.next().await.unwrap().is_ok_and(|received| {
-                received.key == expected_key && received.value == expected_value
-            })
+            stream
+                .next()
+                .await
+                .unwrap()
+                .is_ok_and(|received: StringMessage| {
+                    received.key() == expected_key && received.value() == expected_value
+                })
         })
         .await
         .expect("Expected message was not delivered to the expected Publisher");

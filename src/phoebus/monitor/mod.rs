@@ -2,16 +2,13 @@
 //!
 //! Contains the construct that watches a given Phoebus topic and reports relevant messages to Controls.
 
-use crate::{
-    models::{
-        ACK_COMMAND, AlarmStateCache, CachedState, PvCache, SynchronizerConfig,
-        alarm::status::State,
-        phoebus::{Command, Config, Key, Operation, PvMetadata},
-    },
-    phoebus::sync::ControlsClient,
-};
-use rust_pubsub_lib::{Message, PubSubError, Subscriber};
-use std::{sync::Arc, time::Duration};
+use crate::models::alarm::status::State;
+use crate::models::phoebus::{Command, Config, Key, Operation, PvMetadata};
+use crate::models::{ACK_COMMAND, AlarmStateCache, CachedState, PvCache, SynchronizerConfig};
+use crate::phoebus::sync::ControlsClient;
+use rust_pubsub_lib::{Message, PubSubError, StringMessage, Subscriber};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::time::sleep;
 use tokio_stream::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
@@ -58,7 +55,7 @@ impl Monitor {
         info!("Starting monitor for Phoebus topic: {}", self.topic);
         loop {
             let mut sub = S::new(self.phoebus_host.clone(), self.topic.clone());
-            match sub.get_stream().as_mut() {
+            match sub.get_stream().await.as_mut() {
                 Ok(phoebus_stream) => self.watch_stream(phoebus_stream).await,
                 Err(e) => error!("{e}"),
             }
@@ -210,25 +207,25 @@ impl Monitor {
 
     /// The primary logic for handling a new message from Phoebus.
     /// Disambiguates the type of message and hands it off to the appropriate helper method.
-    async fn process_message(&self, msg: Message) {
-        if msg.key.is_none() {
+    async fn process_message(&self, msg: StringMessage) {
+        if let Some(key_str) = msg.key() {
+            let key = Key::from(key_str);
+            match key.operation {
+                Operation::Command => self.process_command(key, msg.value()).await,
+                Operation::Config => self.process_config(key, msg.value()).await,
+                Operation::Other => process_other(key, msg.value()),
+            }
+        } else {
             error!(
                 "Got message with no key. There is a problem with the pub-sub crate or with the messages in the Phoebus Kafka.\n Message: {msg:?}"
             );
-            return;
-        }
-        let key = Key::from(msg.key.unwrap());
-        match key.operation {
-            Operation::Command => self.process_command(key, msg.value).await,
-            Operation::Config => self.process_config(key, msg.value).await,
-            Operation::Other => process_other(key, msg.value),
         }
     }
 
     /// Monitors the provided [`Stream`] and processes messages that appear there. Terminates when the stream ends or a cancel is requested.
     async fn watch_stream(
         &self,
-        phoebus_stream: &mut (impl Stream<Item = Result<Message, PubSubError>> + Unpin + Send),
+        phoebus_stream: &mut (impl Stream<Item = Result<StringMessage, PubSubError>> + Unpin + Send),
     ) {
         loop {
             tokio::select! {

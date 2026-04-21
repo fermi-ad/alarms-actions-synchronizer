@@ -1,7 +1,7 @@
 //! The tests for the main.rs file.
 
 use super::*;
-use rust_pubsub_lib::{Message, PubSubError};
+use rust_pubsub_lib::{Message, PubSubError, StringMessage};
 use tokio_stream::Stream;
 
 #[derive(Debug)]
@@ -12,24 +12,25 @@ impl Publisher for MockPubSub {
         unimplemented!()
     }
 
-    async fn publish(&self, _: Message) -> Result<(), PubSubError> {
+    async fn publish<T, M: Message<T>>(&self, _: M) -> Result<(), PubSubError> {
         unimplemented!()
     }
 }
 #[async_trait::async_trait]
 impl Snapshot for MockPubSub {
-    async fn get(_: String, _: String) -> Result<Vec<Message>, PubSubError> {
+    async fn get<T, M: Message<T>>(_: String, _: String) -> Result<Vec<M>, PubSubError> {
         unimplemented!()
     }
 }
+#[async_trait::async_trait]
 impl Subscriber for MockPubSub {
     fn new(_: String, _: String) -> Self {
         unimplemented!()
     }
 
-    fn get_stream(
+    async fn get_stream<T, M: Message<T>>(
         &mut self,
-    ) -> Result<impl Stream<Item = Result<Message, PubSubError>>, PubSubError> {
+    ) -> Result<impl Stream<Item = Result<M, PubSubError>>, PubSubError> {
         Ok(tokio_stream::empty())
     }
 }
@@ -85,16 +86,23 @@ fn new_mock_pubsub_as_subscriber() {
 #[tokio::test]
 #[should_panic]
 async fn mock_pubsub_publish() {
-    let _ = MockPubSub.publish(Message::from_value(String::new())).await;
+    let _ = MockPubSub
+        .publish(StringMessage::from_value(String::new()))
+        .await;
 }
 
 #[tokio::test]
 #[should_panic]
 async fn mock_pubsub_snapshot() {
-    let _ = MockPubSub::get(String::new(), String::new()).await;
+    let _ = MockPubSub::get::<String, StringMessage>(String::new(), String::new()).await;
 }
 
-#[test]
-fn mock_pubsub_stream() {
-    assert!(MockPubSub.get_stream().is_ok());
+#[tokio::test]
+async fn mock_pubsub_stream() {
+    assert!(
+        MockPubSub
+            .get_stream::<String, StringMessage>()
+            .await
+            .is_ok()
+    );
 }

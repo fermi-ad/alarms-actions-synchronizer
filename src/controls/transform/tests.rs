@@ -13,9 +13,9 @@ fn should_convert_command() {
     };
 
     let result_message = controls_to_phoebus(&status, Operation::Command, &metadata).unwrap();
-    assert_eq!(result_message.key, Some(String::from("command:/")));
+    assert_eq!(result_message.key(), Some(String::from("command:/")));
     assert_eq!(
-        result_message.value,
+        result_message.value(),
         serde_json::to_string(&Command {
             user: String::new(),
             host: CONTROLS_HOST.to_string(),
@@ -35,9 +35,9 @@ fn should_convert_config() {
     };
 
     let result_message = controls_to_phoebus(&status, Operation::Config, &metadata).unwrap();
-    assert_eq!(result_message.key, Some(String::from("config:/")));
+    assert_eq!(result_message.key(), Some(String::from("config:/")));
     assert_eq!(
-        result_message.value,
+        result_message.value(),
         serde_json::to_string(&Config {
             enabled: Some(true.to_string()),
             host: CONTROLS_HOST.to_string(),

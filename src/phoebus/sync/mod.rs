@@ -2,16 +2,13 @@
 //!
 //! Handles how updates from Phoebus are communicated to the Controls alarms server.
 
-use crate::models::{
-    alarm::{
-        AcknowledgeAlarmRequest, BypassAlarmRequest, SnoozeAlarmRequest,
-        alarm_commands_client::AlarmCommandsClient,
-    },
-    generated::{Empty, Timestamp},
-};
+use crate::models::alarm::alarm_commands_client::AlarmCommandsClient;
+use crate::models::alarm::{AcknowledgeAlarmRequest, BypassAlarmRequest, SnoozeAlarmRequest};
+use crate::models::generated::{Empty, Timestamp};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tonic::{Response, transport::Channel};
+use tonic::Response;
+use tonic::transport::Channel;
 use tracing::error;
 
 /// Shorthand for the shared reference to an optional instance of [`AlarmCommandsClient`].

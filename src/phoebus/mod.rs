@@ -2,11 +2,9 @@
 //!
 //! Contains the [`Synchronizer`] for pushing Phoebus commands and configs into the Controls alarm server.
 
-use crate::{
-    models::{Synchronizer, SynchronizerConfig},
-    phoebus::monitor::Monitor,
-    utils::get_command_topic,
-};
+use crate::models::{Synchronizer, SynchronizerConfig};
+use crate::phoebus::monitor::Monitor;
+use crate::utils::get_command_topic;
 use init::get_existing_messages_from_phoebus;
 use rust_pubsub_lib::{Publisher, Snapshot, Subscriber};
 use sync::ControlsClient;
