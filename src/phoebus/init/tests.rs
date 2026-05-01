@@ -1,10 +1,12 @@
 //! Phoebus Initialization Module Tests
 
-use super::*;
-use rust_pubsub_lib::{ByteMessage, PubSubError};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use rust_pubsub_lib::{ByteMessage, PubSubError};
 use tokio::sync::RwLock;
+
+use super::*;
 
 #[derive(Debug)]
 struct ErroringSnapshot;
@@ -36,6 +38,11 @@ fn generate_test_messages() -> Vec<ByteMessage> {
             Some("not recognizable key".as_bytes().to_vec()),
             "malformed text".as_bytes().to_vec(),
         ),
+        // Tests device with missing severity
+        ByteMessage::new(
+            Some("state:/missing_severity_device".as_bytes().to_vec()),
+            "{}".as_bytes().to_vec(),
+        ),
         // Tests an unknown severity
         ByteMessage::new(
             Some("state:/unknown_severity_device".as_bytes().to_vec()),
@@ -61,6 +68,21 @@ fn generate_test_messages() -> Vec<ByteMessage> {
             Some("state:/acked_severity_device".as_bytes().to_vec()),
             "{ \"severity\": \"unknown_ACK\" }".as_bytes().to_vec(),
         ),
+        // Tests startup state evidence that should not overwrite config-derived bypass evidence
+        ByteMessage::new(
+            Some(
+                "config:path/to/config_bypassed_then_state_ok"
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            "{ \"user\": \"\", \"host\": \"\", \"enabled\": \"false\" }"
+                .as_bytes()
+                .to_vec(),
+        ),
+        ByteMessage::new(
+            Some("state:/config_bypassed_then_state_ok".as_bytes().to_vec()),
+            "{ \"severity\": \"ok\" }".as_bytes().to_vec(),
+        ),
         // Tests malformed config
         ByteMessage::new(
             Some("config:/".as_bytes().to_vec()),
@@ -85,31 +107,19 @@ async fn should_report_error_getting_snapshot() {
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
 async fn should_parse_existing_messages() {
     let alarm_cache = Arc::new(RwLock::new(HashMap::new()));
-    let pv_cache = Arc::new(RwLock::new(HashMap::new()));
+    let metadata_scope = MetadataScope::new();
 
     get_existing_messages_from_phoebus::<PopulatedSnapshot>(
         String::new(),
         vec![String::new()],
         &alarm_cache,
-        &pv_cache,
+        &metadata_scope,
     )
     .await;
 
-    assert!(logs_contain("Could not match any fields from "));
-    assert!(logs_contain("Failed deserializing config message: "));
-    assert!(logs_contain("No key provided on config/state message: "));
-    assert!(logs_contain(
-        "Startup hydration outcome: Hydrated { source: PhoebusConfig }"
-    ));
-    assert!(logs_contain(
-        "Startup hydration outcome: Hydrated { source: PhoebusState }"
-    ));
-
     let state_reader = alarm_cache.read().await;
-    let pv_reader = pv_cache.read().await;
 
     assert!(
         state_reader
@@ -143,8 +153,23 @@ async fn should_parse_existing_messages() {
             .is_some_and(|state| state.state == State::Bypassed)
     );
     assert!(
-        pv_reader
-            .get("bypassed")
+        state_reader
+            .get("config_bypassed_then_state_ok")
+            .is_some_and(|state| state.state == State::Bypassed && state.wake.is_none())
+    );
+    assert!(
+        metadata_scope
+            .lookup_metadata_by_device("bypassed")
+            .await
+            .is_some_and(
+                |metadata| metadata.config.enabled == Some(false.to_string())
+                    && metadata.display_path == "path/to"
+            )
+    );
+    assert!(
+        metadata_scope
+            .lookup_metadata_by_device("config_bypassed_then_state_ok")
+            .await
             .is_some_and(
                 |metadata| metadata.config.enabled == Some(false.to_string())
                     && metadata.display_path == "path/to"

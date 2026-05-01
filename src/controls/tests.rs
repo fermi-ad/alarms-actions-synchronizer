@@ -1,26 +1,24 @@
-//! Tests for Controls Module
-//!
-//! Tests the various functions in the controls module.
+//! Tests for the Controls module.
+
+use std::sync::Arc;
+
+use rust_pubsub_lib::{KafkaPublisher, KafkaSubscriber, StringMessage};
 
 use super::*;
-use crate::models::ACK_COMMAND;
 use crate::models::alarm::status::State;
-use crate::models::phoebus::{Command, Config, PvMetadata};
-use crate::utils::test_runner::{
-    MessageOrigin, PHOEBUS_TOPIC, TestRunner, get_mock_sync_config_salted,
+use crate::models::cache::ObservedAlarmState;
+use crate::models::outcomes::AttemptResult;
+use crate::models::phoebus::{Command, Config, Operation, PvMetadata};
+use crate::models::{
+    ACK_COMMAND, OutOfScopeReason, SkipReason, SyncDirection, SyncOutcome,
+    read_controls_observed_state_policy, record_controls_observed_state,
 };
-use rust_pubsub_lib::{KafkaPublisher, KafkaSubscriber, StringMessage};
-use std::sync::Arc;
+use crate::utils::test_runner::{MessageOrigin, TestRunner};
 
 type ControlsTestRunner = TestRunner<StringMessage, String, SyncImpl<KafkaPublisher>>;
 
-async fn get_salted_test_instance() -> ControlsTestRunner {
-    ControlsTestRunner::check_when(MessageOrigin::Controls, Some(get_mock_sync_config_salted()))
-        .await
-}
-
 async fn get_test_instance() -> ControlsTestRunner {
-    ControlsTestRunner::check_when(MessageOrigin::Controls, None).await
+    ControlsTestRunner::check_when(MessageOrigin::Controls).await
 }
 
 #[tokio::test]
@@ -28,23 +26,34 @@ async fn should_continue_when_no_cached_alarm_state() {
     let test_instance = get_test_instance().await;
     let sync = &test_instance.sync;
 
-    sync.pv_metadata.write().await.insert(
-        String::new(),
-        PvMetadata {
-            config: Config::default(),
-            display_path: String::new(),
-            phoebus_topic: String::from(PHOEBUS_TOPIC),
-        },
-    );
+    let phoebus_topic = test_instance
+        .test_config
+        .phoebus_topics
+        .iter()
+        .find(|topic| !topic.ends_with("Command"))
+        .cloned()
+        .expect("Expected a base Phoebus topic publisher to exist");
+    sync.metadata_scope
+        .update_cached_metadata(
+            "",
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::new(),
+                phoebus_topic: phoebus_topic.clone(),
+            },
+        )
+        .await;
 
-    let mut status = Status::default();
-    status.set_source(Source::Epics);
-    status.set_state(State::Acknowledged);
+    let status = Status {
+        source: Source::Epics.into(),
+        state: State::Acknowledged.into(),
+        ..Status::default()
+    };
     let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
     let mut receiver = KafkaSubscriber::new(
         test_instance.harness.host().await,
-        get_command_topic(PHOEBUS_TOPIC),
+        get_command_topic(&phoebus_topic),
     );
     let mut stream = receiver
         .get_stream::<String, StringMessage>()
@@ -65,165 +74,206 @@ async fn should_continue_when_no_cached_alarm_state() {
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
 async fn should_not_sync_corrupted_controls_message() {
     let message =
         StringMessage::from_value(String::from("{ \"unknownKey\": \"Malformed message\" }"));
 
-    get_test_instance()
-        .await
-        .has(message)
-        .results_in(async || logs_contain("Failed to deserialize Controls message value"))
-        .await
-        .expect("Did not detect expected log message.");
-}
-
-#[tokio::test]
-#[tracing_test::traced_test]
-async fn should_treat_epics_device_without_phoebus_metadata_as_out_of_scope() {
-    let mut status = Status::default();
-    status.set_state(State::Bypassed);
-    status.set_source(Source::Epics);
-    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
-
-    status.set_state(State::Alarmed);
     let test_instance = get_test_instance().await;
     let sync = &test_instance.sync;
-    sync.alarms_states
-        .write()
-        .await
-        .insert(String::new(), status.clone().into());
+    let cache = Arc::clone(&sync.alarm_states);
 
     test_instance
         .has(message)
-        .results_in(async || {
-            logs_contain("Treating device as out of scope until Phoebus configuration metadata is discovered")
-        })
+        .results_in(async move || cache.read().await.is_empty())
         .await
-        .expect("Did not detect expected log message.");
+        .expect("Corrupted Controls message should not update observed alarm state cache.");
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
+async fn should_treat_epics_device_without_phoebus_metadata_as_out_of_scope() {
+    let status = Status {
+        state: State::Bypassed.into(),
+        source: Source::Epics.into(),
+        ..Status::default()
+    };
+    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
+
+    let cached_status = Status {
+        state: State::Alarmed.into(),
+        ..status.clone()
+    };
+    let test_instance = get_test_instance().await;
+    let sync = &test_instance.sync;
+    sync.alarm_states
+        .write()
+        .await
+        .insert(String::new(), cached_status.clone().into());
+    let cache = Arc::clone(&sync.alarm_states);
+    let expected_cached = ObservedAlarmState::from_status(&cached_status).into_cached_state();
+
+    test_instance
+        .has(message)
+        .results_in(async move || {
+            cache.read().await.get("").cloned() == Some(expected_cached.clone())
+        })
+        .await
+        .expect("Out-of-scope EPICS device should preserve previously cached observed state.");
+}
+
+#[tokio::test]
 async fn should_not_sync_when_alarm_state_is_not_syncable() {
     let test_instance = get_test_instance().await;
     let sync = &test_instance.sync;
 
-    sync.pv_metadata.write().await.insert(
-        String::new(),
-        PvMetadata {
-            config: Config::default(),
-            display_path: String::new(),
-            phoebus_topic: String::new(),
-        },
-    );
+    sync.metadata_scope
+        .update_cached_metadata(
+            "",
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::new(),
+                phoebus_topic: String::new(),
+            },
+        )
+        .await;
 
-    let mut status = Status::default();
-    status.set_source(Source::Epics);
+    let status = Status {
+        source: Source::Epics.into(),
+        ..Status::default()
+    };
 
-    sync.alarms_states
+    sync.alarm_states
         .write()
         .await
         .insert(String::new(), status.clone().into());
 
-    status.set_state(State::Ok);
-    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
+    let expected_status = Status {
+        state: State::Ok.into(),
+        ..status
+    };
+    let expected_cached = ObservedAlarmState::from_status(&expected_status).into_cached_state();
+    let message = StringMessage::from_value(serde_json::to_string(&expected_status).unwrap());
+    let cache = Arc::clone(&sync.alarm_states);
 
     test_instance
         .has(message)
-        .results_in(async || {
-            logs_contain("Recording latest observed state for loop prevention and doing nothing")
+        .results_in(async move || {
+            cache.read().await.get("").cloned() == Some(expected_cached.clone())
         })
         .await
-        .expect("Did not detect expected log message.");
+        .expect("Non-syncable Controls state should still refresh latest observed state.");
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
 async fn should_treat_unchanged_state_as_duplicate() {
-    let test_instance = get_salted_test_instance().await;
+    let test_instance = get_test_instance().await;
     let sync = &test_instance.sync;
 
-    sync.pv_metadata.write().await.insert(
-        String::new(),
-        PvMetadata {
-            config: Config::default(),
-            display_path: String::new(),
-            phoebus_topic: String::new(),
-        },
-    );
+    sync.metadata_scope
+        .update_cached_metadata(
+            "",
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::new(),
+                phoebus_topic: String::new(),
+            },
+        )
+        .await;
 
-    let mut status = Status::default();
-    status.set_source(Source::Epics);
+    let status = Status {
+        source: Source::Epics.into(),
+        ..Status::default()
+    };
     let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
-    sync.alarms_states
+    sync.alarm_states
         .write()
         .await
-        .insert(String::new(), status.into());
+        .insert(String::new(), status.clone().into());
+    let cache = Arc::clone(&sync.alarm_states);
+    let expected_cached = ObservedAlarmState::from_status(&status).into_cached_state();
 
     test_instance
         .has(message)
-        .results_in(async || {
-            logs_contain(
-                "Treating message as a duplicate of the latest observed state and doing nothing.",
-            )
+        .results_in(async move || {
+            cache.read().await.get("").cloned() == Some(expected_cached.clone())
         })
         .await
-        .expect("Did not detect expected log message.");
+        .expect("Duplicate Controls state should leave cached observed state unchanged.");
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
 async fn should_not_sync_when_no_publisher_for_topic() {
     let test_instance = get_test_instance().await;
     let sync = &test_instance.sync;
 
-    sync.pv_metadata.write().await.insert(
-        String::new(),
-        PvMetadata {
-            config: Config::default(),
-            display_path: String::new(),
-            phoebus_topic: String::new(),
-        },
-    );
+    sync.metadata_scope
+        .update_cached_metadata(
+            "",
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::new(),
+                // Use an empty string topic — no publisher will exist for this
+                phoebus_topic: String::new(),
+            },
+        )
+        .await;
 
-    let mut status = Status::default();
-    status.set_source(Source::Epics);
+    let status = Status {
+        source: Source::Epics.into(),
+        ..Status::default()
+    };
 
-    sync.alarms_states
+    sync.alarm_states
         .write()
         .await
         .insert(String::new(), status.clone().into());
 
-    status.set_state(State::Acknowledged);
-    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
+    let expected_cached = ObservedAlarmState::from_status(&Status {
+        state: State::Acknowledged.into(),
+        ..status.clone()
+    })
+    .into_cached_state();
+    let cache = Arc::clone(&sync.alarm_states);
+
+    let message = StringMessage::from_value(
+        serde_json::to_string(&Status {
+            state: State::Acknowledged.into(),
+            ..status
+        })
+        .unwrap(),
+    );
 
     test_instance
         .has(message)
-        .results_in(async || {
-            logs_contain("Received message for device with no matching Phoebus topic.")
+        .results_in(async move || {
+            cache.read().await.get("").cloned() == Some(expected_cached.clone())
         })
         .await
-        .expect("Did not detect expected log message.");
+        .expect(
+            "Missing-publisher path should still record latest observed state for loop prevention.",
+        );
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
 async fn should_record_acnet_device_without_transmitting() {
-    let mut status = Status::default();
-    status.set_source(Source::Analog);
+    let status = Status {
+        source: Source::Analog.into(),
+        ..Status::default()
+    };
 
+    let expected_cached = ObservedAlarmState::from_status(&status).into_cached_state();
     let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
-    get_salted_test_instance()
-        .await
+    let test_instance = get_test_instance().await;
+    let cache = Arc::clone(&test_instance.sync.alarm_states);
+
+    test_instance
         .has(message)
-        .results_in(async || {
-            logs_contain("Recording latest observed state for loop prevention and doing nothing")
+        .results_in(async move || {
+            cache.read().await.get("").cloned() == Some(expected_cached.clone())
         })
         .await
-        .expect("Did not detect expected log message.");
+        .expect("External-source Controls state should be recorded for loop prevention.");
 }
 
 #[tokio::test]
@@ -234,7 +284,7 @@ async fn should_not_transmit_unknown_device() {
     let test_instance = get_test_instance().await;
     let sync = &test_instance.sync;
 
-    let cache = Arc::clone(&sync.alarms_states);
+    let cache = Arc::clone(&sync.alarm_states);
 
     test_instance
         .has(message)
@@ -243,41 +293,249 @@ async fn should_not_transmit_unknown_device() {
         .expect("Did not detect expected log message.");
 }
 
+#[test]
+fn should_map_missing_metadata_decision_to_out_of_scope_outcome() {
+    assert_eq!(
+        handle_out_of_scope_decision("missing-device", OutOfScopeReason::MissingPhoebusMetadata),
+        SyncOutcome::OutOfScope {
+            reason: OutOfScopeReason::MissingPhoebusMetadata,
+        }
+    );
+}
+
+#[test]
+fn should_map_missing_publisher_outbound_result_to_skipped_outcome() {
+    assert_eq!(
+        OutboundSyncResult::Skipped {
+            reason: SkipReason::MissingPublisher,
+        }
+        .into_sync_outcome(SyncDirection::ControlsToPhoebus),
+        SyncOutcome::Skipped {
+            reason: SkipReason::MissingPublisher,
+        }
+    );
+}
+
+#[test]
+fn should_map_failed_controls_outbound_result_to_attempted_failed_outcome() {
+    assert_eq!(
+        OutboundSyncResult::Failed.into_sync_outcome(SyncDirection::ControlsToPhoebus),
+        SyncOutcome::Attempted {
+            direction: SyncDirection::ControlsToPhoebus,
+            result: AttemptResult::Failed,
+        }
+    );
+}
+
+#[tokio::test]
+async fn should_read_controls_policy_duplicate_only_for_exact_match() {
+    let test_instance = get_test_instance().await;
+    let sync = &test_instance.sync;
+    let wake = Some(crate::models::generated::Timestamp {
+        seconds: 42,
+        nanos: 8,
+    });
+    let status = Status {
+        device: String::from("device"),
+        source: Source::Epics.into(),
+        state: State::Bypassed.into(),
+        wake: wake.clone(),
+        ..Status::default()
+    };
+
+    sync.alarm_states.write().await.insert(
+        status.device.clone(),
+        Status {
+            wake: None,
+            ..status.clone()
+        }
+        .into(),
+    );
+
+    let policy = read_controls_observed_state_policy(&sync.alarm_states, &status).await;
+    assert!(!policy.suppresses_duplicate());
+
+    sync.alarm_states.write().await.insert(
+        status.device.clone(),
+        ObservedAlarmState::from_status(&status).into_cached_state(),
+    );
+
+    let policy = read_controls_observed_state_policy(&sync.alarm_states, &status).await;
+    assert!(policy.suppresses_duplicate());
+}
+
+#[tokio::test]
+async fn should_record_controls_policy_latest_incoming_state_for_local_only_paths() {
+    let test_instance = get_test_instance().await;
+    let sync = &test_instance.sync;
+    let status = Status {
+        device: String::from("device"),
+        source: Source::Analog.into(),
+        state: State::Acknowledged.into(),
+        ..Status::default()
+    };
+
+    sync.alarm_states.write().await.insert(
+        status.device.clone(),
+        Status {
+            state: State::Ok.into(),
+            ..status.clone()
+        }
+        .into(),
+    );
+
+    let policy = read_controls_observed_state_policy(&sync.alarm_states, &status).await;
+    record_controls_observed_state(&sync.alarm_states, &policy).await;
+
+    assert_eq!(
+        sync.alarm_states.read().await.get(&status.device).cloned(),
+        Some(ObservedAlarmState::from_status(&status).into_cached_state())
+    );
+}
+
+#[test]
+fn should_decide_non_sync_epics_state_as_ignored() {
+    let status = Status {
+        source: Source::Epics.into(),
+        state: State::Ok.into(),
+        ..Status::default()
+    };
+
+    let pv_metadata = PvMetadata {
+        config: Config::default(),
+        display_path: String::new(),
+        phoebus_topic: String::new(),
+    };
+
+    assert!(matches!(
+        decide_epics_sync(&status, Some(pv_metadata)),
+        ControlsInboundDecision::IgnoreNonSyncState
+    ));
+}
+
+#[test]
+fn should_decide_missing_metadata_as_out_of_scope() {
+    let status = Status {
+        source: Source::Epics.into(),
+        state: State::Bypassed.into(),
+        ..Status::default()
+    };
+
+    assert!(matches!(
+        decide_epics_sync(&status, None),
+        ControlsInboundDecision::OutOfScope {
+            reason: OutOfScopeReason::MissingPhoebusMetadata,
+        }
+    ));
+}
+
+#[test]
+fn should_decide_acknowledged_epics_state_as_command_sync() {
+    let status = Status {
+        source: Source::Epics.into(),
+        state: State::Acknowledged.into(),
+        ..Status::default()
+    };
+    let pv_metadata = PvMetadata {
+        config: Config::default(),
+        display_path: String::from("display"),
+        phoebus_topic: String::from("topic"),
+    };
+
+    match decide_epics_sync(&status, Some(pv_metadata.clone())) {
+        ControlsInboundDecision::SyncToPhoebus {
+            operation,
+            pv_metadata: decided_metadata,
+        } => {
+            assert_eq!(operation, Operation::Command);
+            assert_eq!(decided_metadata.display_path, pv_metadata.display_path);
+            assert_eq!(decided_metadata.phoebus_topic, pv_metadata.phoebus_topic);
+            assert_eq!(decided_metadata.config, pv_metadata.config);
+        }
+        decision => panic!("Expected sync decision, got {decision:?}"),
+    }
+}
+
+#[test]
+fn should_decide_bypassed_epics_state_as_config_sync() {
+    let status = Status {
+        source: Source::Epics.into(),
+        state: State::Bypassed.into(),
+        ..Status::default()
+    };
+    let pv_metadata = PvMetadata {
+        config: Config::default(),
+        display_path: String::from("display"),
+        phoebus_topic: String::from("topic"),
+    };
+
+    match decide_epics_sync(&status, Some(pv_metadata.clone())) {
+        ControlsInboundDecision::SyncToPhoebus {
+            operation,
+            pv_metadata: decided_metadata,
+        } => {
+            assert_eq!(operation, Operation::Config);
+            assert_eq!(decided_metadata.display_path, pv_metadata.display_path);
+            assert_eq!(decided_metadata.phoebus_topic, pv_metadata.phoebus_topic);
+            assert_eq!(decided_metadata.config, pv_metadata.config);
+        }
+        decision => panic!("Expected sync decision, got {decision:?}"),
+    }
+}
+
 #[tokio::test]
 async fn should_sync_valid_acknowledge_message() {
     let test_instance = get_test_instance().await;
     let sync = &test_instance.sync;
 
-    sync.pv_metadata.write().await.insert(
-        String::new(),
-        PvMetadata {
-            config: Config::default(),
-            display_path: String::new(),
-            phoebus_topic: String::from(PHOEBUS_TOPIC),
-        },
-    );
+    let phoebus_topic = test_instance
+        .test_config
+        .phoebus_topics
+        .iter()
+        .find(|topic| !topic.ends_with("Command"))
+        .cloned()
+        .expect("Expected a base Phoebus topic publisher to exist");
+    sync.metadata_scope
+        .update_cached_metadata(
+            "",
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::new(),
+                phoebus_topic: phoebus_topic.clone(),
+            },
+        )
+        .await;
 
-    let mut status = Status::default();
-    status.set_source(Source::Epics);
+    let status = Status {
+        source: Source::Epics.into(),
+        ..Status::default()
+    };
 
-    sync.alarms_states
+    sync.alarm_states
         .write()
         .await
         .insert(String::new(), status.clone().into());
 
-    status.set_state(State::Acknowledged);
-    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
+    let message = StringMessage::from_value(
+        serde_json::to_string(&Status {
+            state: State::Acknowledged.into(),
+            ..status
+        })
+        .unwrap(),
+    );
 
-    let mut expected_command = Command::default();
-    expected_command.command = ACK_COMMAND.to_string();
-    expected_command.host = "Flutter Alarms App".to_string();
+    let expected_command = Command {
+        command: ACK_COMMAND.to_string(),
+        host: "Flutter Alarms App".to_string(),
+        ..Command::default()
+    };
 
     let expected_key = Some(String::from("command:/"));
     let expected_value = serde_json::to_string(&expected_command).unwrap();
 
     let mut receiver = KafkaSubscriber::new(
         test_instance.harness.host().await,
-        get_command_topic(PHOEBUS_TOPIC),
+        get_command_topic(&phoebus_topic),
     );
     let mut stream = receiver.get_stream().await.unwrap();
 
@@ -301,37 +559,52 @@ async fn should_sync_valid_bypass_message() {
     let test_instance = get_test_instance().await;
     let sync = &test_instance.sync;
 
-    sync.pv_metadata.write().await.insert(
-        String::new(),
-        PvMetadata {
-            config: Config::default(),
-            display_path: String::new(),
-            phoebus_topic: String::from(PHOEBUS_TOPIC),
-        },
-    );
+    let phoebus_topic = test_instance
+        .test_config
+        .phoebus_topics
+        .iter()
+        .find(|topic| !topic.ends_with("Command"))
+        .cloned()
+        .expect("Expected a base Phoebus topic publisher to exist");
+    sync.metadata_scope
+        .update_cached_metadata(
+            "",
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::new(),
+                phoebus_topic: phoebus_topic.clone(),
+            },
+        )
+        .await;
 
-    let mut status = Status::default();
-    status.set_source(Source::Epics);
+    let status = Status {
+        source: Source::Epics.into(),
+        ..Status::default()
+    };
 
-    sync.alarms_states
+    sync.alarm_states
         .write()
         .await
         .insert(String::new(), status.clone().into());
 
-    status.set_state(State::Bypassed);
-    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
+    let message = StringMessage::from_value(
+        serde_json::to_string(&Status {
+            state: State::Bypassed.into(),
+            ..status
+        })
+        .unwrap(),
+    );
 
-    let mut expected_config = Config::default();
-    expected_config.enabled = Some(false.to_string());
-    expected_config.host = "Flutter Alarms App".to_string();
+    let expected_config = Config {
+        enabled: Some(false.to_string()),
+        host: "Flutter Alarms App".to_string(),
+        ..Config::default()
+    };
 
     let expected_key = Some(String::from("config:/"));
     let expected_value = serde_json::to_string(&expected_config).unwrap();
 
-    let mut receiver = KafkaSubscriber::new(
-        test_instance.harness.host().await,
-        String::from(PHOEBUS_TOPIC),
-    );
+    let mut receiver = KafkaSubscriber::new(test_instance.harness.host().await, phoebus_topic);
     let mut stream = receiver.get_stream().await.unwrap();
 
     test_instance

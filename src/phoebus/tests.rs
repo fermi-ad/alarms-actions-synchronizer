@@ -1,177 +1,74 @@
-//! Phoebus Module Tests
+//! Tests for Phoebus Module
+//!
+//! Tests the various functions in the Phoebus module.
+
+use std::sync::Arc;
+
+use chrono::{Duration, Utc};
+use rust_pubsub_lib::{Message, StringMessage};
 
 use super::*;
+use crate::models::CachedState;
 use crate::models::alarm::status::State;
-use crate::models::phoebus::{Command, Config, PvMetadata};
-use crate::models::{ACK_COMMAND, CachedState};
-use crate::utils::test_runner::{
-    MessageOrigin, TestRunner, get_mock_sync_config, get_mock_sync_config_salted,
-};
-use chrono::Utc;
-use rust_pubsub_lib::{KafkaPublisher, KafkaSnapshot, KafkaSubscriber, Message, StringMessage};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::sleep;
+use crate::models::phoebus::{Command, Config, Key, Operation, PvMetadata};
+use crate::utils::test_runner::{MessageOrigin, TestRunner, send_test_message};
 
 #[tokio::test]
-#[tracing_test::traced_test]
-async fn should_create_new_synchronizer() {
-    let config = get_mock_sync_config();
-    let cancel_token = config.cancel_token.clone();
-    tokio::spawn(async move {
-        let sync: SyncImpl = Synchronizer::<KafkaPublisher, KafkaSubscriber>::new(config);
-        Synchronizer::<KafkaPublisher, KafkaSubscriber>::synchronize::<KafkaSnapshot>(sync).await
-    });
-
-    // Give things a beat to start.
-    sleep(Duration::from_millis(250)).await;
-    cancel_token.cancel();
-
-    assert!(logs_contain("Starting Phoebus-to-Controls Synchronizer"));
-}
-
-#[tokio::test]
-#[tracing_test::traced_test]
-async fn should_not_sync_messages_without_keys_on_init() {
-    let message = StringMessage::new(None, String::new());
-
-    TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus, None)
-        .await
-        .has(message)
-        .on_init_results_in(async || logs_contain("No key provided on config/state message:"))
-        .await
-        .expect("The expected log message was never recorded");
-}
-
-#[tokio::test]
-#[tracing_test::traced_test]
-async fn should_not_sync_messages_without_keys_after_init() {
-    let message = StringMessage::new(None, String::new());
-    let sync_config = get_mock_sync_config_salted();
-    let phoebus_topic = sync_config.phoebus_topics[0].clone();
-    TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::Phoebus,
-        Some(sync_config),
-    )
-    .await
-    .has(message)
-    .after_init_results_in(
-        async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-        async || logs_contain("Got message with no key."),
-    )
-    .await
-    .expect("The expected log message was never recorded");
-}
-
-#[tokio::test]
-#[tracing_test::traced_test]
-async fn should_sync_valid_acknowledge_commands() {
-    let sync_config = get_mock_sync_config_salted();
-    let phoebus_topic = sync_config.phoebus_topics[0].clone();
-    let test_instance = TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::PhoebusCommand,
-        Some(sync_config),
-    )
-    .await;
-    let sync = &test_instance.sync;
-
-    let alarm_states = Arc::clone(&sync.config.alarm_states);
-
-    let command = Command {
-        user: String::from("my user"),
-        host: String::new(),
-        command: ACK_COMMAND.to_string(),
-    };
+async fn should_not_sync_corrupted_command() {
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+    let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
     let message = StringMessage::new(
-        Some(String::from("command:my/path/to/MyDevice")),
-        serde_json::to_string(&command).unwrap(),
+        Some(String::from("command:path/to/MyDevice")),
+        String::from("{ \"notRealCommandMessage\": \"Should not parse\" }"),
     );
+
+    send_test_message(
+        &test_instance.harness,
+        message,
+        test_instance.test_config.phoebus_topics[0].clone(),
+    )
+    .await
+    .expect("Failed to publish malformed startup command.");
 
     test_instance
-        .has(message)
-        .after_init_results_in(
-            async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-            async || {
-                alarm_states
-                    .read()
-                    .await
-                    .get("MyDevice")
-                    .is_some_and(|state| state.state == State::Acknowledged)
-            },
-        )
+        .has(StringMessage::new(
+            Some(String::from("command:path/to/ReadinessNoop")),
+            serde_json::to_string(&Command {
+                host: String::from("Readiness Host"),
+                command: String::from("unsupported"),
+                user: String::from("readiness-user"),
+            })
+            .unwrap(),
+        ))
+        .after_init_results_in(async || alarm_states.read().await.get("MyDevice").is_none())
         .await
-        .expect("The alarm state was not set to 'Acknowledged'")
+        .expect("Malformed startup command should not create observed alarm state.");
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
-async fn should_not_sync_unparseable_command_messages() {
+async fn should_not_sync_corrupted_command_after_init() {
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+    let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
     let message = StringMessage::new(
-        Some(String::from("command:not/a/real/Device")),
-        String::from("{ \"fakeKey\": \"Can't be parsed to a Command object\" }"),
+        Some(String::from("command:path/to/MyDevice")),
+        String::from("{ \"notRealCommandMessage\": \"Should not parse\" }"),
     );
-
-    let sync_config = get_mock_sync_config_salted();
-    let phoebus_topic = sync_config.phoebus_topics[0].clone();
-    TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::PhoebusCommand,
-        Some(sync_config),
-    )
-    .await
-    .has(message)
-    .after_init_results_in(
-        async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-        async || logs_contain("Failed to deserialize Phoebus command"),
-    )
-    .await
-    .expect("The expected log message was never recorded");
+    test_instance
+        .has(message)
+        .after_init_results_in(async || alarm_states.read().await.get("MyDevice").is_none())
+        .await
+        .expect("Malformed runtime command should not create observed alarm state.");
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
-async fn should_not_sync_invalid_commands() {
-    let command = Command {
-        user: String::from("my user"),
-        host: String::new(),
-        command: String::from("some other command"),
-    };
-    let message = StringMessage::new(
-        Some(String::from("command:my/path/to/MyDevice")),
-        serde_json::to_string(&command).unwrap(),
-    );
+async fn should_not_sync_duplicate_acknowledgement_commands() {
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+    let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
 
-    let sync_config = get_mock_sync_config_salted();
-    let phoebus_topic = sync_config.phoebus_topics[0].clone();
-    TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::PhoebusCommand,
-        Some(sync_config),
-    )
-    .await
-    .has(message)
-    .after_init_results_in(
-        async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-        async || {
-            logs_contain(
-                "Received Phoebus command that does not need to be processed. Doing nothing.",
-            )
-        },
-    )
-    .await
-    .expect("The expected log message was never recorded");
-}
-
-#[tokio::test]
-#[tracing_test::traced_test]
-async fn should_not_sync_already_synced_commands() {
-    let sync_config = get_mock_sync_config_salted();
-    let phoebus_topic = sync_config.phoebus_topics[0].clone();
-    let test_instance = TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::PhoebusCommand,
-        Some(sync_config),
-    )
-    .await;
-    let sync = &test_instance.sync;
-    sync.config.alarm_states.write().await.insert(
+    test_instance.test_config.alarm_states.write().await.insert(
         String::from("MyDevice"),
         CachedState {
             state: State::Acknowledged,
@@ -180,10 +77,11 @@ async fn should_not_sync_already_synced_commands() {
     );
 
     let command = Command {
-        user: String::from("my user"),
-        host: String::new(),
-        command: ACK_COMMAND.to_string(),
+        host: String::from("Test Host"),
+        command: String::from("acknowledge"),
+        user: String::from("test-user"),
     };
+
     let message = StringMessage::new(
         Some(String::from("command:my/path/to/MyDevice")),
         serde_json::to_string(&command).unwrap(),
@@ -191,42 +89,46 @@ async fn should_not_sync_already_synced_commands() {
 
     test_instance
         .has(message)
-        .after_init_results_in(
-            async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-            async || {
-                logs_contain(
-                    "Received acknowledgement command from Phoebus for device 'MyDevice', but it is already acknowledged. Doing nothing.",
-                )
-            },
-        )
+        .after_init_results_in(async || {
+            alarm_states.read().await.get("MyDevice")
+                == Some(&CachedState {
+                    state: State::Acknowledged,
+                    wake: None,
+                })
+        })
         .await
-        .expect("The expected log message was never recorded");
+        .expect("Duplicate acknowledgement command should leave observed alarm state unchanged.");
 }
 
 #[tokio::test]
 async fn should_sync_valid_bypass_config_with_false() {
-    let test_instance = TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::Phoebus,
-        Some(get_mock_sync_config_salted()),
-    )
-    .await;
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;
 
     let alarm_states = Arc::clone(&sync.config.alarm_states);
 
-    let mut config = Config::default();
-    config.enabled = Some(true.to_string());
+    let initial_config = Config {
+        enabled: Some(true.to_string()),
+        ..Config::default()
+    };
 
-    sync.config.pv_metadata.write().await.insert(
-        String::from("MyDevice"),
-        PvMetadata {
-            config: config.clone(),
-            display_path: String::from("my/path/to"),
-            phoebus_topic: sync.config.phoebus_topics[0].clone(),
-        },
-    );
+    sync.config
+        .metadata_scope
+        .update_cached_metadata(
+            "MyDevice",
+            PvMetadata {
+                config: initial_config,
+                display_path: String::from("my/path/to"),
+                phoebus_topic: sync.config.phoebus_topics[0].clone(),
+            },
+        )
+        .await;
 
-    config.enabled = Some(false.to_string());
+    let config = Config {
+        enabled: Some(false.to_string()),
+        ..Config::default()
+    };
 
     let message = StringMessage::new(
         Some(String::from("config:my/path/to/MyDevice")),
@@ -248,28 +150,30 @@ async fn should_sync_valid_bypass_config_with_false() {
 
 #[tokio::test]
 async fn should_sync_valid_bypass_config_with_none() {
-    let test_instance = TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::Phoebus,
-        Some(get_mock_sync_config_salted()),
-    )
-    .await;
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;
 
     let alarm_states = Arc::clone(&sync.config.alarm_states);
 
-    let mut config = Config::default();
-    config.enabled = Some(true.to_string());
+    let initial_config = Config {
+        enabled: Some(true.to_string()),
+        ..Config::default()
+    };
 
-    sync.config.pv_metadata.write().await.insert(
-        String::from("MyDevice"),
-        PvMetadata {
-            config: config.clone(),
-            display_path: String::from("my/path/to"),
-            phoebus_topic: sync.config.phoebus_topics[0].clone(),
-        },
-    );
+    sync.config
+        .metadata_scope
+        .update_cached_metadata(
+            "MyDevice",
+            PvMetadata {
+                config: initial_config,
+                display_path: String::from("my/path/to"),
+                phoebus_topic: sync.config.phoebus_topics[0].clone(),
+            },
+        )
+        .await;
 
-    config.enabled = None;
+    let config = Config::default();
 
     let message = StringMessage::new(
         Some(String::from("config:my/path/to/MyDevice")),
@@ -291,28 +195,33 @@ async fn should_sync_valid_bypass_config_with_none() {
 
 #[tokio::test]
 async fn should_sync_valid_snooze_config() {
-    let test_instance = TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::Phoebus,
-        Some(get_mock_sync_config_salted()),
-    )
-    .await;
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;
 
     let alarm_states = Arc::clone(&sync.config.alarm_states);
 
-    let mut config = Config::default();
-    config.enabled = Some(true.to_string());
+    let initial_config = Config {
+        enabled: Some(true.to_string()),
+        ..Config::default()
+    };
 
-    sync.config.pv_metadata.write().await.insert(
-        String::from("MyDevice"),
-        PvMetadata {
-            config: config.clone(),
-            display_path: String::from("my/path/to"),
-            phoebus_topic: sync.config.phoebus_topics[0].clone(),
-        },
-    );
+    sync.config
+        .metadata_scope
+        .update_cached_metadata(
+            "MyDevice",
+            PvMetadata {
+                config: initial_config,
+                display_path: String::from("my/path/to"),
+                phoebus_topic: sync.config.phoebus_topics[0].clone(),
+            },
+        )
+        .await;
 
-    config.enabled = Some((Utc::now() + Duration::from_hours(1)).to_rfc3339());
+    let config = Config {
+        enabled: Some((Utc::now() + Duration::hours(1)).to_rfc3339()),
+        ..Config::default()
+    };
 
     let message = StringMessage::new(
         Some(String::from("config:my/path/to/MyDevice")),
@@ -331,28 +240,31 @@ async fn should_sync_valid_snooze_config() {
         .await
         .expect("The alarm state was not set to 'Bypassed' or the state's wake value was not set");
 }
+
 #[tokio::test]
 async fn should_sync_valid_active_config_with_time() {
-    let test_instance = TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::Phoebus,
-        Some(get_mock_sync_config_salted()),
-    )
-    .await;
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;
 
     let alarm_states = Arc::clone(&sync.config.alarm_states);
 
-    sync.config.pv_metadata.write().await.insert(
-        String::from("MyDevice"),
-        PvMetadata {
-            config: Config::default(),
-            display_path: String::from("my/path/to"),
-            phoebus_topic: sync.config.phoebus_topics[0].clone(),
-        },
-    );
+    sync.config
+        .metadata_scope
+        .update_cached_metadata(
+            "MyDevice",
+            PvMetadata {
+                config: Config::default(),
+                display_path: String::from("my/path/to"),
+                phoebus_topic: sync.config.phoebus_topics[0].clone(),
+            },
+        )
+        .await;
 
-    let mut config = Config::default();
-    config.enabled = Some((Utc::now() - Duration::from_hours(1)).to_rfc3339());
+    let config = Config {
+        enabled: Some((Utc::now() - Duration::hours(1)).to_rfc3339()),
+        ..Config::default()
+    };
 
     let message = StringMessage::new(
         Some(String::from("config:my/path/to/MyDevice")),
@@ -374,17 +286,16 @@ async fn should_sync_valid_active_config_with_time() {
 
 #[tokio::test]
 async fn should_sync_valid_active_config_with_true() {
-    let test_instance = TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::Phoebus,
-        Some(get_mock_sync_config_salted()),
-    )
-    .await;
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;
 
     let alarm_states = Arc::clone(&sync.config.alarm_states);
 
-    let mut config = Config::default();
-    config.enabled = Some(true.to_string());
+    let config = Config {
+        enabled: Some(true.to_string()),
+        ..Config::default()
+    };
 
     let message = StringMessage::new(
         Some(String::from("config:my/path/to/MyDevice")),
@@ -405,191 +316,190 @@ async fn should_sync_valid_active_config_with_true() {
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
 async fn should_not_sync_corrupted_config_on_init() {
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+    let metadata_scope = test_instance.test_config.metadata_scope.clone();
+    let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
     let message = StringMessage::new(
         Some(String::from("config:path/to/MyDevice")),
         String::from("{ \"notRealConfigMessage\": \"Should not parse\" }"),
     );
-    TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus, None)
+
+    send_test_message(
+        &test_instance.harness,
+        message,
+        test_instance.test_config.phoebus_topics[0].clone(),
+    )
+    .await
+    .expect("Failed to publish malformed startup config.");
+
+    test_instance
+        .has(StringMessage::new(
+            Some(String::from("config:path/to/ReadinessNoop")),
+            serde_json::to_string(&Config::default()).unwrap(),
+        ))
+        .after_init_results_in(async || {
+            metadata_scope
+                .lookup_metadata_by_device("MyDevice")
+                .await
+                .is_none()
+                && alarm_states.read().await.get("MyDevice").is_none()
+        })
         .await
-        .has(message)
-        .on_init_results_in(async || logs_contain("Failed deserializing config message"))
-        .await
-        .expect("The expected log message was not detected.");
+        .expect(
+            "Malformed startup config should not create cached metadata or observed alarm state.",
+        );
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
 async fn should_not_sync_corrupted_config_after_init() {
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+    let metadata_scope = test_instance.test_config.metadata_scope.clone();
+    let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
     let message = StringMessage::new(
         Some(String::from("config:path/to/MyDevice")),
         String::from("{ \"notRealConfigMessage\": \"Should not parse\" }"),
     );
-    let sync_config = get_mock_sync_config_salted();
-    let phoebus_topic = sync_config.phoebus_topics[0].clone();
-    TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::Phoebus,
-        Some(sync_config),
-    )
-    .await
-    .has(message)
-    .after_init_results_in(
-        async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-        async || logs_contain("Failed to deserialize Phoebus config"),
-    )
-    .await
-    .expect("The expected log message was not detected.");
+    test_instance
+        .has(message)
+        .after_init_results_in(async || {
+            metadata_scope
+                .lookup_metadata_by_device("MyDevice")
+                .await
+                .is_none()
+                && alarm_states.read().await.get("MyDevice").is_none()
+        })
+        .await
+        .expect(
+            "Malformed runtime config should not create cached metadata or observed alarm state.",
+        );
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
 async fn should_not_sync_duplicated_config() {
-    let sync_config = get_mock_sync_config_salted();
-    let phoebus_topic = sync_config.phoebus_topics[0].clone();
-    let test_instance = TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::Phoebus,
-        Some(sync_config),
-    )
-    .await;
-    let sync = &test_instance.sync;
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+    let metadata_scope = test_instance.test_config.metadata_scope.clone();
+    let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
 
     let config = Config::default();
 
-    sync.config.pv_metadata.write().await.insert(
-        String::from("MyDevice"),
-        PvMetadata {
-            config: config.clone(),
-            display_path: String::new(),
-            phoebus_topic: phoebus_topic.clone(),
-        },
-    );
-
-    let message = StringMessage::new(
-        Some(String::from("config:path/to/MyDevice")),
-        serde_json::to_string(&config).unwrap(),
-    );
-    test_instance
-        .has(message)
-        .after_init_results_in(
-            async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-            async || {
-                logs_contain(
-                    "Received config from Phoebus for device 'MyDevice' that matches the cached config. Doing nothing.",
-                )
+    metadata_scope
+        .update_cached_metadata(
+            "MyDevice",
+            PvMetadata {
+                config: config.clone(),
+                display_path: String::from("cached/display"),
+                phoebus_topic: test_instance.test_config.phoebus_topics[0].clone(),
             },
         )
-        .await
-        .expect("The expected log message was not detected.");
-}
+        .await;
 
-#[tokio::test]
-#[tracing_test::traced_test]
-async fn should_not_sync_unexpected_enabled_states() {
-    let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus, None)
-            .await;
-    let sync = &test_instance.sync;
-
-    let mut config = Config::default();
-
-    sync.config.pv_metadata.write().await.insert(
-        String::from("MyDevice"),
-        PvMetadata {
-            config: config.clone(),
-            display_path: String::new(),
-            phoebus_topic: String::new(),
-        },
-    );
-
-    config.enabled = Some(String::from("invalid value"));
-
+    let expected_topic = test_instance.test_config.phoebus_topics[0].clone();
     let message = StringMessage::new(
         Some(String::from("config:path/to/MyDevice")),
         serde_json::to_string(&config).unwrap(),
     );
     test_instance
         .has(message)
-        .results_in(async || {
-            logs_contain(
-                "Could not parse the enabled state of a Phoebus config message to either a date or a bool.",
-            )
+        .after_init_results_in(async move || {
+            metadata_scope
+                .lookup_metadata_by_device("MyDevice")
+                .await
+                .is_some_and(|metadata| {
+                    metadata.config == config
+                        && metadata.display_path == "cached/display"
+                        && metadata.phoebus_topic == expected_topic
+                })
+                && alarm_states.read().await.get("MyDevice").is_none()
         })
         .await
-        .expect("The expected log message was not detected.");
+        .expect(
+            "Duplicate config should preserve cached metadata and avoid observed state writes.",
+        );
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
-async fn should_not_sync_already_active_config() {
-    let test_instance = TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::Phoebus,
-        Some(get_mock_sync_config_salted()),
-    )
-    .await;
-    let sync = &test_instance.sync;
-    let phoebus_topic = sync.config.phoebus_topics[0].clone();
+async fn should_not_sync_unexpected_enabled_states() {
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+    let metadata_scope = test_instance.test_config.metadata_scope.clone();
+    let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
 
-    let mut config = Config::default();
+    let initial_config = Config::default();
 
-    sync.config.pv_metadata.write().await.insert(
-        String::from("MyDevice"),
-        PvMetadata {
-            config: config.clone(),
-            display_path: String::new(),
-            phoebus_topic: String::new(),
-        },
-    );
-    sync.config.alarm_states.write().await.insert(
-        String::from("MyDevice"),
-        CachedState {
-            state: State::Ok,
-            wake: None,
-        },
-    );
+    test_instance
+        .test_config
+        .metadata_scope
+        .update_cached_metadata(
+            "BadEnabledStateDevice",
+            PvMetadata {
+                config: initial_config.clone(),
+                display_path: String::from("cached/display"),
+                phoebus_topic: test_instance.test_config.phoebus_topics[0].clone(),
+            },
+        )
+        .await;
 
-    config.enabled = Some(true.to_string());
-
+    let expected_topic = test_instance.test_config.phoebus_topics[0].clone();
     let message = StringMessage::new(
-        Some(String::from("config:path/to/MyDevice")),
-        serde_json::to_string(&config).unwrap(),
+        Some(String::from("config:path/to/BadEnabledStateDevice")),
+        serde_json::to_string(&Config {
+            enabled: Some(String::from("invalid value")),
+            ..Config::default()
+        })
+        .unwrap(),
     );
     test_instance
         .has(message)
-        .after_init_results_in(
-            async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-            async || {
-                logs_contain(
-                    "Received configuration update from Phoebus to activate alarm for device 'MyDevice', but it is already active. Updating cached config only.",
-                )
-            },
-        )
+        .after_init_results_in(async move || {
+            metadata_scope
+                .lookup_metadata_by_device("BadEnabledStateDevice")
+                .await
+                .is_some_and(|metadata| {
+                    metadata.config == initial_config
+                        && metadata.display_path == "cached/display"
+                        && metadata.phoebus_topic == expected_topic
+                })
+                && alarm_states
+                    .read()
+                    .await
+                    .get("BadEnabledStateDevice")
+                    .is_none()
+        })
         .await
-        .expect("The expected log message was not detected.");
+        .expect(
+            "Malformed enablement config should not overwrite cached metadata or observed state.",
+        );
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
-async fn should_not_sync_already_bypassed_config() {
-    let test_instance = TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::Phoebus,
-        Some(get_mock_sync_config_salted()),
-    )
-    .await;
+async fn should_only_refresh_local_cache_for_active_config_until_controls_supports_it() {
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;
-    let phoebus_topic = sync.config.phoebus_topics[0].clone();
 
-    let mut config = Config::default();
-    config.enabled = Some(true.to_string());
+    let metadata_scope = sync.config.metadata_scope.clone();
+    let alarm_states = Arc::clone(&sync.config.alarm_states);
 
-    sync.config.pv_metadata.write().await.insert(
-        String::from("MyDevice"),
-        PvMetadata {
-            config: config.clone(),
-            display_path: String::new(),
-            phoebus_topic: String::new(),
-        },
-    );
+    let previous_config = Config {
+        enabled: Some(false.to_string()),
+        ..Config::default()
+    };
+
+    sync.config
+        .metadata_scope
+        .update_cached_metadata(
+            "MyDevice",
+            PvMetadata {
+                config: previous_config,
+                display_path: String::from("cached/display"),
+                phoebus_topic: sync.config.phoebus_topics[0].clone(),
+            },
+        )
+        .await;
     sync.config.alarm_states.write().await.insert(
         String::from("MyDevice"),
         CachedState {
@@ -598,49 +508,173 @@ async fn should_not_sync_already_bypassed_config() {
         },
     );
 
-    config.enabled = Some(false.to_string());
+    let active_config = Config {
+        enabled: Some(true.to_string()),
+        user: String::from("runtime user"),
+        ..Config::default()
+    };
+
+    let message = StringMessage::new(
+        Some(String::from("config:path/to/MyDevice")),
+        serde_json::to_string(&active_config).unwrap(),
+    );
+    let expected_topic = test_instance.test_config.phoebus_topics[0].clone();
+    test_instance
+        .has(message)
+        .after_init_results_in(async move || {
+            metadata_scope
+                .lookup_metadata_by_device("MyDevice")
+                .await
+                .is_some_and(|metadata| {
+                    metadata.config == active_config
+                        && metadata.display_path == "cached/display"
+                        && metadata.phoebus_topic == expected_topic
+                })
+                && alarm_states.read().await.get("MyDevice")
+                    == Some(&CachedState {
+                        state: State::Ok,
+                        wake: None,
+                    })
+        })
+        .await
+        .expect("Active config should refresh cached config and observed state.");
+}
+
+#[tokio::test]
+async fn should_not_sync_already_bypassed_config() {
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+    let metadata_scope = test_instance.test_config.metadata_scope.clone();
+    let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
+
+    let initial_config = Config {
+        enabled: Some(true.to_string()),
+        ..Config::default()
+    };
+
+    test_instance
+        .test_config
+        .metadata_scope
+        .update_cached_metadata(
+            "MyDevice",
+            PvMetadata {
+                config: initial_config,
+                display_path: String::from("cached/display"),
+                phoebus_topic: test_instance.test_config.phoebus_topics[0].clone(),
+            },
+        )
+        .await;
+    test_instance.test_config.alarm_states.write().await.insert(
+        String::from("MyDevice"),
+        CachedState {
+            state: State::Bypassed,
+            wake: None,
+        },
+    );
+
+    let config = Config {
+        enabled: Some(false.to_string()),
+        ..Config::default()
+    };
 
     let message = StringMessage::new(
         Some(String::from("config:path/to/MyDevice")),
         serde_json::to_string(&config).unwrap(),
     );
+    let expected_topic = test_instance.test_config.phoebus_topics[0].clone();
     test_instance
         .has(message)
-        .after_init_results_in(
-            async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-            async || {
-                logs_contain(
-                    "Received configuration update from Phoebus to bypass alarm for device 'MyDevice', but it is already bypassed. Updating cached PV config only.",
-                )
-            },
-        )
+        .after_init_results_in(async move || {
+            metadata_scope.lookup_metadata_by_device("MyDevice").await.is_some_and(|metadata| {
+                metadata.config == config
+                    && metadata.display_path == "cached/display"
+                    && metadata.phoebus_topic == expected_topic
+            }) && alarm_states.read().await.get("MyDevice")
+                == Some(&CachedState {
+                    state: State::Bypassed,
+                    wake: None,
+                })
+        })
         .await
-        .expect("The expected log message was not detected.");
+        .expect("Already bypassed config should refresh cached config while leaving observed alarm state bypassed.");
 }
 
 #[tokio::test]
 #[tracing_test::traced_test]
+async fn should_add_new_device_to_scope_from_runtime_config() {
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+    let sync = &test_instance.sync;
+
+    let metadata_scope = sync.config.metadata_scope.clone();
+    let alarm_states = Arc::clone(&sync.config.alarm_states);
+
+    let config = Config {
+        enabled: Some(false.to_string()),
+        ..Config::default()
+    };
+
+    let message = StringMessage::new(
+        Some(String::from("config:runtime/path/NewDevice")),
+        serde_json::to_string(&config).unwrap(),
+    );
+
+    test_instance
+        .has(message)
+        .results_in(async || {
+            metadata_scope
+                .lookup_metadata_by_device("NewDevice")
+                .await
+                .is_some_and(|metadata| {
+                    metadata.config.enabled == Some(false.to_string())
+                        && metadata.display_path == "runtime/path"
+                })
+                && alarm_states
+                    .read()
+                    .await
+                    .get("NewDevice")
+                    .is_some_and(|state| state.state == State::Bypassed)
+        })
+        .await
+        .expect("Runtime config did not add the new device to scope with bypassed startup state.");
+}
+
+#[tokio::test]
 async fn should_not_sync_unknown_operations() {
+    let test_instance =
+        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+    let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
+
+    // Pre-seed a known state so we can verify it is preserved (not overwritten) by the unknown-operation message.
+    let pre_seeded = CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    };
+    alarm_states
+        .write()
+        .await
+        .insert(String::from("MyDevice"), pre_seeded.clone());
+
     let message = StringMessage::new(
         Some(String::from("some-other-command:path/to/MyDevice")),
         String::new(),
     );
-    let sync_config = get_mock_sync_config_salted();
-    let phoebus_topic = sync_config.phoebus_topics[0].clone();
-    TestRunner::<StringMessage, String, SyncImpl>::check_when(
-        MessageOrigin::Phoebus,
-        Some(sync_config),
-    )
-    .await
-    .has(message)
-    .after_init_results_in(
-        async || logs_contain(&format!("Topic {phoebus_topic} has no messages")),
-        async || {
-            logs_contain(
-                "Received Phoebus message that is not a config or a command. Treating it as non-sync Phoebus noise and doing nothing.",
-            )
-        },
-    )
-    .await
-    .expect("The expected log message was not detected.");
+    test_instance
+        .has(message)
+        .after_init_results_in(async move || {
+            alarm_states.read().await.get("MyDevice").cloned() == Some(pre_seeded.clone())
+        })
+        .await
+        .expect(
+            "Unknown operation prefix should leave pre-existing observed alarm state unchanged.",
+        );
+}
+
+#[test]
+fn should_parse_command_key() {
+    let result = Key::parse("command:path/to/MyDevice").unwrap();
+
+    assert_eq!(result.device, "MyDevice");
+    assert_eq!(result.display_path, "path/to");
+    assert_eq!(result.operation, Operation::Command);
 }

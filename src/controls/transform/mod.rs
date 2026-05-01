@@ -6,7 +6,7 @@
 use crate::models::ACK_COMMAND;
 use crate::models::alarm::Status;
 use crate::models::alarm::status::State;
-use crate::models::phoebus::{Command, Config, Operation, PvMetadata};
+use crate::models::phoebus::{Command, Config, NormalizedEnablement, Operation, PvMetadata};
 use crate::utils::get_command_topic;
 use chrono::{TimeZone, Utc};
 use rust_pubsub_lib::{Message, StringMessage};
@@ -16,6 +16,34 @@ mod tests;
 
 /// The host name to report to Phoebus when sending messages from the Sync service.
 const CONTROLS_HOST: &str = "Flutter Alarms App";
+
+/// Domain-facing description of whether a Controls state should be synchronized to Phoebus, and if so how.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyncAction {
+    Acknowledge,
+    UpdateConfig,
+    Ignore,
+}
+
+impl SyncAction {
+    /// Maps a sync action to the Phoebus wire operation required to express it.
+    pub fn to_operation(self) -> Option<Operation> {
+        match self {
+            Self::Acknowledge => Some(Operation::Command),
+            Self::UpdateConfig => Some(Operation::Config),
+            Self::Ignore => None,
+        }
+    }
+}
+
+/// Determines the domain-facing synchronization action for a given Controls [`State`].
+pub fn state_to_sync_action(alarm_state: State) -> SyncAction {
+    match alarm_state {
+        State::Acknowledged => SyncAction::Acknowledge,
+        State::Bypassed => SyncAction::UpdateConfig,
+        _ => SyncAction::Ignore,
+    }
+}
 
 /// Converts the provided values into a [`Message`] for Phoebus.
 pub fn controls_to_phoebus(
@@ -34,10 +62,10 @@ pub fn controls_to_phoebus(
         Operation::Config => serde_json::to_string(&Config {
             user: controls_alarm.user.clone(),
             host: CONTROLS_HOST.to_string(),
-            enabled: Some(get_enabled_string(controls_alarm)),
+            enabled: normalized_enablement_from_controls(controls_alarm).as_enabled_string(),
             phoebus_specific: metadata.config.phoebus_specific.clone(),
         }),
-        Operation::Other => return Err(Operation::get_err_string_for_other()),
+        Operation::State => return Err(Operation::unsupported_sync_action_error()),
     }
     .map_err(|e| format!("{e:?}"))?;
     Ok(StringMessage::new(Some(transformed_key), transformed_value))
@@ -52,27 +80,18 @@ pub fn get_topic_for_operation(operation: &Operation, metadata: &PvMetadata) -> 
     }
 }
 
-/// Determines the correct [`Operation`] for a given [`State`].
-pub fn state_to_operation(alarm_state: State) -> Operation {
-    match alarm_state {
-        State::Acknowledged => Operation::Command,
-        State::Bypassed => Operation::Config,
-        _ => Operation::Other,
-    }
-}
-
-/// Determines the [`String`] to use when populating the [`enabled`](Config::enabled) field of a Phoebus [`Config`] record.
-fn get_enabled_string(controls_alarm: &Status) -> String {
+/// Normalizes Controls state into the domain-facing Phoebus enablement concept used for outbound config messages.
+fn normalized_enablement_from_controls(controls_alarm: &Status) -> NormalizedEnablement {
     if controls_alarm.state() == State::Bypassed {
         match controls_alarm
             .wake
             .and_then(|t| Utc.timestamp_opt(t.seconds, t.nanos as u32).single())
         {
-            Some(dt) => dt.to_rfc3339(),
-            None => false.to_string(),
+            Some(dt) => NormalizedEnablement::SnoozedUntil(dt.fixed_offset()),
+            None => NormalizedEnablement::Bypassed,
         }
     } else {
-        true.to_string()
+        NormalizedEnablement::Active
     }
 }
 

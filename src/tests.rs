@@ -1,8 +1,10 @@
 //! The tests for the main.rs file.
 
-use super::*;
-use rust_pubsub_lib::{Message, PubSubError, StringMessage};
+use rust_pubsub_lib::{Message, PubSubError, Publisher, Snapshot, StringMessage, Subscriber};
 use tokio_stream::Stream;
+
+use super::*;
+use crate::models::Synchronizer;
 
 #[derive(Debug)]
 struct MockPubSub;
@@ -47,9 +49,20 @@ impl Synchronizer<MockPubSub, MockPubSub> for MockSync {
     }
 }
 
+#[async_trait::async_trait]
+impl RuntimeSyncFactory for MockSync {
+    fn new(config: SynchronizerConfig) -> Self {
+        <Self as Synchronizer<MockPubSub, MockPubSub>>::new(config)
+    }
+
+    async fn run(self) {
+        <Self as Synchronizer<MockPubSub, MockPubSub>>::synchronize::<MockPubSub>(self).await
+    }
+}
+
 #[test]
 fn should_create_sync_config() {
-    let result = create_synchronizer_config();
+    let result = create_synchronizer_config().unwrap();
     assert!(!result.controls_host.is_empty());
     assert!(!result.controls_topic.is_empty());
     assert!(!result.phoebus_host.is_empty());
@@ -57,44 +70,19 @@ fn should_create_sync_config() {
 }
 
 #[test]
-#[should_panic]
 #[tracing_test::traced_test]
-fn should_setup_logging() {
-    // Panics due to the tracing-test library already setting a global default
-    setup_logging();
+fn should_setup_logging_returns_err_when_already_initialized() {
+    // tracing-test already sets a global default subscriber, so setup_logging() should
+    // return Err(LoggingInitError::AlreadyInitialized) rather than panicking.
+    use crate::models::LoggingInitError;
+    let result = setup_logging();
+    assert_eq!(result, Err(LoggingInitError::AlreadyInitialized));
 }
 
 #[tokio::test]
 async fn should_begin_sync() {
-    let handle =
-        begin_sync::<MockPubSub, MockPubSub, MockPubSub, MockSync>(create_synchronizer_config());
+    let handle = begin_sync::<MockSync>(create_synchronizer_config().unwrap());
     assert_eq!((), handle.await.unwrap());
-}
-
-#[test]
-#[should_panic]
-fn new_mock_pubsub_as_publisher() {
-    let _ = <MockPubSub as Publisher>::new(String::new(), String::new());
-}
-
-#[test]
-#[should_panic]
-fn new_mock_pubsub_as_subscriber() {
-    let _ = <MockPubSub as Subscriber>::new(String::new(), String::new());
-}
-
-#[tokio::test]
-#[should_panic]
-async fn mock_pubsub_publish() {
-    let _ = MockPubSub
-        .publish(StringMessage::from_value(String::new()))
-        .await;
-}
-
-#[tokio::test]
-#[should_panic]
-async fn mock_pubsub_snapshot() {
-    let _ = MockPubSub::get::<String, StringMessage>(String::new(), String::new()).await;
 }
 
 #[tokio::test]

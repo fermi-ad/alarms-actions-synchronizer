@@ -2,7 +2,7 @@
 //!
 //! Contains the [`Synchronizer`] for pushing Phoebus commands and configs into the Controls alarm server.
 
-use crate::models::{Synchronizer, SynchronizerConfig};
+use crate::models::{RuntimeSyncFactory, Synchronizer, SynchronizerConfig};
 use crate::phoebus::monitor::Monitor;
 use crate::utils::get_command_topic;
 use init::get_existing_messages_from_phoebus;
@@ -36,7 +36,7 @@ impl<P: Publisher, S: Subscriber + Send + Sync + 'static> Synchronizer<P, S> for
                 self.config.phoebus_host.clone(),
                 self.config.phoebus_topics.clone(),
                 &self.config.alarm_states,
-                &self.config.pv_metadata,
+                &self.config.metadata_scope,
             ) => {}
         }
 
@@ -57,5 +57,16 @@ impl<P: Publisher, S: Subscriber + Send + Sync + 'static> Synchronizer<P, S> for
             _ = self.config.cancel_token.cancelled() => {}
             _ = monitors.join_all() => {}
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl RuntimeSyncFactory for SyncImpl {
+    fn new(config: SynchronizerConfig) -> Self {
+        <Self as Synchronizer<rust_pubsub_lib::KafkaPublisher, rust_pubsub_lib::KafkaSubscriber>>::new(config)
+    }
+
+    async fn run(self) {
+        <Self as Synchronizer<rust_pubsub_lib::KafkaPublisher, rust_pubsub_lib::KafkaSubscriber>>::synchronize::<rust_pubsub_lib::KafkaSnapshot>(self).await
     }
 }
