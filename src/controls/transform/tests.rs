@@ -4,11 +4,6 @@ use super::*;
 use crate::models::generated::Timestamp;
 
 #[test]
-fn should_return_none_when_sync_action_is_ignore() {
-    assert_eq!(SyncAction::Ignore.to_operation(), None);
-}
-
-#[test]
 fn should_convert_command() {
     let status = Status::default();
     let metadata = PvMetadata {

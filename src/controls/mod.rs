@@ -314,8 +314,8 @@ fn decide_epics_sync(
     controls_alarm: &Status,
     pv_metadata: Option<PvMetadata>,
 ) -> ControlsInboundDecision {
-    let sync_action = transform::state_to_sync_action(controls_alarm.state());
-    let operation = match sync_action.to_operation() {
+    let operation_opt = transform::state_to_operation(controls_alarm.state());
+    let operation = match operation_opt {
         Some(operation) => operation,
         None => return ControlsInboundDecision::IgnoreNonSyncState,
     };

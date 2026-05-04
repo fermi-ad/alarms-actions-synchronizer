@@ -143,7 +143,17 @@ async fn handle_config(
             };
         }
     };
-    let alarm_state = config.as_cached_state();
+    let alarm_state = match config.as_cached_state() {
+        Ok(alarm_state) => alarm_state,
+        Err(_) => {
+            warn!(
+                "Failed parsing the State of a configuration message.\n Tried parsing: {config:?}"
+            );
+            return SyncOutcome::Ignored {
+                reason: IgnoreReason::MalformedMessage,
+            };
+        }
+    };
     record_config_hydrated_state(state_cache, &key.device, alarm_state).await;
     metadata_scope
         .update_cached_metadata(

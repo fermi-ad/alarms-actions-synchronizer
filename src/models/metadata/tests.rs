@@ -36,11 +36,11 @@ async fn discover_metadata_from_config_creates_metadata_with_normalized_topic() 
     let config = Config::default();
 
     // Test with Command suffix
-    let metadata = scope.discover_metadata_from_config(&key, &config, "testCommand");
+    let metadata = scope.build_metadata_from_config(&key, &config, "testCommand");
     assert_eq!(metadata.phoebus_topic, "test");
 
     // Test without Command suffix
-    let metadata = scope.discover_metadata_from_config(&key, &config, "test-topic");
+    let metadata = scope.build_metadata_from_config(&key, &config, "test-topic");
     assert_eq!(metadata.phoebus_topic, "test-topic");
 }
 

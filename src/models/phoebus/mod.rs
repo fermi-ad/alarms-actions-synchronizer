@@ -115,8 +115,8 @@ pub struct Config {
 impl Config {
     /// Normalizes the wire-facing [`Config::enabled`] field into a named domain concept.
     ///
-    /// Returns `Err(())` if the wire value could not be normalized into a supported enablement meaning.
-    pub fn normalized_enablement(&self) -> Result<NormalizedEnablement, ()> {
+    /// Returns [`Err(PhoebusParseError)`](PhoebusParseError) if the wire value could not be normalized into a supported enablement meaning.
+    pub fn normalized_enablement(&self) -> Result<NormalizedEnablement, PhoebusParseError> {
         match self.enabled.as_deref() {
             None => Ok(NormalizedEnablement::Bypassed),
             Some(value) => {
@@ -133,16 +133,14 @@ impl Config {
                 error!(
                     "Could not normalize the enabled state of a Phoebus config message to an enablement meaning.\n Config record: {self:?}"
                 );
-                Err(())
+                Err(PhoebusParseError::MalformedMessage)
             }
         }
     }
 
     /// Generates an instance of [`CachedState`] based on the normalized meaning of [`enabled`](Config::enabled).
-    pub fn as_cached_state(&self) -> CachedState {
-        self.normalized_enablement()
-            .map(|e| e.as_cached_state())
-            .unwrap_or_default()
+    pub fn as_cached_state(&self) -> Result<CachedState, PhoebusParseError> {
+        self.normalized_enablement().map(|e| e.as_cached_state())
     }
 }
 
@@ -155,6 +153,12 @@ pub enum KeyParseError {
     UnsupportedOperation,
     /// The key structure resolved to an empty device name, which is treated as invalid.
     EmptyDevice,
+}
+
+/// Structured parse failure for Phoebus command or config decision-making.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhoebusParseError {
+    MalformedMessage,
 }
 
 /// This struct is a convenience for parsing the key of a Phoebus Kafka message.

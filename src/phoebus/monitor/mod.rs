@@ -17,7 +17,9 @@
 
 use crate::models::alarm::status::State;
 use crate::models::metadata::MetadataScope;
-use crate::models::phoebus::{Command, Config, Key, KeyParseError, Operation, PvMetadata};
+use crate::models::phoebus::{
+    Command, Config, Key, KeyParseError, Operation, PhoebusParseError, PvMetadata,
+};
 use crate::models::{
     ACK_COMMAND, AlarmStateCache, CachedState, IgnoreReason, PhoebusObservedStatePolicy,
     SkipReason, SyncDirection, SyncOutcome, SynchronizerConfig, read_phoebus_observed_state_policy,
@@ -101,11 +103,8 @@ impl Monitor {
             .lookup_metadata_by_device(&key.device)
             .await
             .unwrap_or_else(|| {
-                self.metadata_scope.discover_metadata_from_config(
-                    key,
-                    &Config::default(),
-                    &self.topic,
-                )
+                self.metadata_scope
+                    .build_metadata_from_config(key, &Config::default(), &self.topic)
             })
     }
 
@@ -114,13 +113,13 @@ impl Monitor {
     /// The synchronizer can observe that Phoebus considers the alarm active again, but it cannot yet mirror that
     /// transition into Controls because the shared interfaces repository does not currently expose an API for
     /// reporting active/OK alarm state back to Controls.
-    async fn record_active_alarm_locally_until_controls_supports_it(
+    async fn record_active_alarm_local_only(
         &self,
         device: &str,
         updated_state: CachedState,
     ) -> SyncOutcome {
         let policy = read_phoebus_observed_state_policy(&self.alarm_states, device).await;
-        if policy.suppresses_active_record_for_current_config_policy() {
+        if policy.is_already_active() {
             handle_already_active(device);
             return SyncOutcome::Ignored {
                 reason: IgnoreReason::UnsupportedOperation,
@@ -251,11 +250,8 @@ impl Monitor {
                     .await
             }
             PhoebusConfigDecision::RecordActiveLocally { updated_state, .. } => {
-                self.record_active_alarm_locally_until_controls_supports_it(
-                    &key.device,
-                    updated_state.clone(),
-                )
-                .await
+                self.record_active_alarm_local_only(&key.device, updated_state.clone())
+                    .await
             }
         };
 
@@ -327,12 +323,6 @@ enum PhoebusCommandDecision {
     Acknowledge { user: String },
 }
 
-/// Structured parse failure for Phoebus command or config decision-making.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PhoebusParseError {
-    MalformedMessage,
-}
-
 /// Decides how an inbound Phoebus command should be handled before transport or cache side effects occur.
 fn decide_phoebus_command(
     msg_text: &str,
@@ -399,21 +389,20 @@ fn decide_phoebus_config(
         return Ok(PhoebusConfigDecision::NoEnablementChange { config });
     }
 
-    let updated_state = config.as_cached_state();
-    if updated_state.state == State::Bypassed {
-        return Ok(PhoebusConfigDecision::BypassOrSnooze {
+    let updated_state = config.as_cached_state()?;
+    match updated_state.state {
+        State::Bypassed => Ok(PhoebusConfigDecision::BypassOrSnooze {
             config,
             updated_state,
-        });
-    }
-    if updated_state.state == State::Ok {
-        return Ok(PhoebusConfigDecision::RecordActiveLocally {
+        }),
+        State::Ok => Ok(PhoebusConfigDecision::RecordActiveLocally {
             config,
             updated_state,
-        });
+        }),
+        _ => unreachable!(
+            "config.as_cached_state should throw if the state does not resolve to Ok or Bypass"
+        ),
     }
-
-    Err(PhoebusParseError::MalformedMessage)
 }
 
 /// Logs the structured parse outcome for Phoebus message handling and maps it to the public synchronization outcome.

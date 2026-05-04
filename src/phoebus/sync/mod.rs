@@ -74,9 +74,9 @@ impl ConnectionManager {
             }
         };
 
-        self.publish_client(client.clone(), 0).await;
+        self.publish_client(client.clone(), 1).await;
         info!(
-            generation = 0u64,
+            generation = 1u64,
             "Outbound command triggered initial shared Controls gRPC client creation"
         );
         Some(client)

@@ -332,7 +332,7 @@ fn should_treat_observed_bypass_state_as_duplicate_bypass_config() {
 fn should_treat_observed_acknowledged_state_as_effectively_active_for_config_policy() {
     let policy = PhoebusObservedStatePolicy::acknowledged();
     assert!(!policy.suppresses_bypass_duplicate(&CachedState::bypassed()));
-    assert!(policy.suppresses_active_record_for_current_config_policy());
+    assert!(policy.is_already_active());
 }
 
 #[test]

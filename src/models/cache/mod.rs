@@ -14,6 +14,9 @@ use crate::models::alarm::Status;
 use crate::models::alarm::status::State;
 use crate::models::generated::Timestamp;
 
+#[cfg(test)]
+mod tests;
+
 /// Alias for the atomic cache of alarm state data, shared between the two synchronizing processes.
 ///
 /// This cache is the synchronizer's local memory of the latest in-scope alarm-handling state it has
@@ -206,7 +209,7 @@ impl PhoebusObservedStatePolicy {
 
     /// Returns whether the current observed cache entry should treat Phoebus re-activation as already recorded
     /// for the current asymmetric config policy.
-    pub fn suppresses_active_record_for_current_config_policy(&self) -> bool {
+    pub fn is_already_active(&self) -> bool {
         self.observed
             .as_ref()
             .is_some_and(|observed| observed.state.state != State::Bypassed)

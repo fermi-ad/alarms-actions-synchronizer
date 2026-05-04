@@ -37,18 +37,18 @@ async fn should_start_with_no_connection() {
 async fn should_reuse_existing_client_when_already_connected() {
     let manager = ConnectionManager::new("http://127.0.0.1:1");
 
-    // Seed a fake client at generation 0 by connecting to a real address first would fail,
-    // so we use publish_client directly to simulate an already-established connection.
-    // We need a real AlarmCommandsClient to publish; use a lazy channel that won't be called.
+    // Seed a fake client at generation 1 (the first real connection generation; 0 is reserved as
+    // "never connected"). We use publish_client directly to simulate an already-established
+    // connection without needing a reachable host.
     let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
     let fake_client = AlarmCommandsClient::new(channel);
-    manager.publish_client(fake_client, 0).await;
+    manager.publish_client(fake_client, 1).await;
 
     // Now request_client should reuse the existing connection
     let result = manager.request_client().await;
 
     assert!(result.is_some());
-    assert_eq!(result.unwrap().generation, Some(0));
+    assert_eq!(result.unwrap().generation, Some(1));
 }
 
 #[tokio::test]
@@ -81,14 +81,15 @@ async fn should_skip_reconnect_when_newer_generation_already_published() {
 async fn should_attempt_reconnect_when_generation_matches_failed_generation() {
     let manager = ConnectionManager::new("http://127.0.0.1:1");
 
-    // Seed a client at generation 0
+    // Seed a client at generation 1 (the first real connection generation; 0 is reserved as
+    // "never connected").
     let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
     let fake_client = AlarmCommandsClient::new(channel);
-    manager.publish_client(fake_client, 0).await;
+    manager.publish_client(fake_client, 1).await;
 
-    // Attempt reconnect claiming failure at generation 0 — should try to reconnect (and fail
+    // Attempt reconnect claiming failure at generation 1 — should try to reconnect (and fail
     // because the host is unreachable)
-    let result = manager.reconnect_client(Some(0)).await;
+    let result = manager.reconnect_client(Some(1)).await;
 
     assert!(result.is_none());
 }

@@ -76,7 +76,10 @@ fn should_normalize_config_enablement_variants() {
         enabled: Some("Corrupted data".to_owned()),
         ..Config::default()
     };
-    assert_eq!(config.normalized_enablement(), Err(()));
+    assert_eq!(
+        config.normalized_enablement(),
+        Err(PhoebusParseError::MalformedMessage)
+    );
 }
 
 #[test]
@@ -131,14 +134,14 @@ fn should_reject_malformed_or_unsupported_keys() {
 #[test]
 fn should_get_cached_state_from_config() {
     let config = Config::default();
-    let result = config.as_cached_state();
+    let result = config.as_cached_state().unwrap();
     assert_eq!(CachedState::bypassed(), result);
 
     let config = Config {
         enabled: Some(true.to_string()),
         ..Config::default()
     };
-    let result = config.as_cached_state();
+    let result = config.as_cached_state().unwrap();
     assert_eq!(
         CachedState {
             state: State::Ok,
@@ -151,14 +154,14 @@ fn should_get_cached_state_from_config() {
         enabled: Some("Corrupted data".to_owned()),
         ..Config::default()
     };
-    let result = config.as_cached_state();
-    assert_eq!(CachedState::default(), result);
+    let result = config.as_cached_state().unwrap_err();
+    assert_eq!(PhoebusParseError::MalformedMessage, result);
 
     let config = Config {
         enabled: Some("2000-01-01T00:00:00.000Z".to_owned()),
         ..Config::default()
     };
-    let result = config.as_cached_state();
+    let result = config.as_cached_state().unwrap();
     assert_eq!(
         CachedState {
             state: State::Ok,

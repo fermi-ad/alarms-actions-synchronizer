@@ -77,7 +77,7 @@ impl MetadataScope {
     /// # Returns
     ///
     /// A new `PvMetadata` instance with the provided configuration and derived fields.
-    pub fn discover_metadata_from_config(
+    pub fn build_metadata_from_config(
         &self,
         key: &crate::models::phoebus::Key,
         config: &Config,

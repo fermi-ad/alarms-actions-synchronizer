@@ -17,31 +17,12 @@ mod tests;
 /// The host name to report to Phoebus when sending messages from the Sync service.
 const CONTROLS_HOST: &str = "Flutter Alarms App";
 
-/// Domain-facing description of whether a Controls state should be synchronized to Phoebus, and if so how.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SyncAction {
-    Acknowledge,
-    UpdateConfig,
-    Ignore,
-}
-
-impl SyncAction {
-    /// Maps a sync action to the Phoebus wire operation required to express it.
-    pub fn to_operation(self) -> Option<Operation> {
-        match self {
-            Self::Acknowledge => Some(Operation::Command),
-            Self::UpdateConfig => Some(Operation::Config),
-            Self::Ignore => None,
-        }
-    }
-}
-
-/// Determines the domain-facing synchronization action for a given Controls [`State`].
-pub fn state_to_sync_action(alarm_state: State) -> SyncAction {
+/// Determines the Phoebus wire operation for a given Controls [`State`].
+pub fn state_to_operation(alarm_state: State) -> Option<Operation> {
     match alarm_state {
-        State::Acknowledged => SyncAction::Acknowledge,
-        State::Bypassed => SyncAction::UpdateConfig,
-        _ => SyncAction::Ignore,
+        State::Acknowledged => Some(Operation::Command),
+        State::Bypassed => Some(Operation::Config),
+        _ => None,
     }
 }
 
