@@ -9,7 +9,7 @@ use crate::models::alarm::status::State;
 use crate::models::outcomes::AttemptResult;
 use crate::models::phoebus::{Command, Config, Operation, PvMetadata};
 use crate::models::{
-    ACK_COMMAND, CachedState, OutOfScopeReason, SkipReason, SyncDirection, SyncOutcome,
+    ACK_COMMAND, CachedState, SkipReason, SyncDirection, SyncOutcome,
     read_controls_observed_state_policy, record_controls_observed_state,
 };
 use crate::utils::test_runner::{MessageOrigin, TestRunner};
@@ -294,10 +294,8 @@ async fn should_not_transmit_unknown_device() {
 #[test]
 fn should_map_missing_metadata_decision_to_out_of_scope_outcome() {
     assert_eq!(
-        handle_out_of_scope_decision("missing-device", OutOfScopeReason::MissingPhoebusMetadata),
-        SyncOutcome::OutOfScope {
-            reason: OutOfScopeReason::MissingPhoebusMetadata,
-        }
+        handle_out_of_scope_decision("missing-device"),
+        SyncOutcome::OutOfScope
     );
 }
 
@@ -421,9 +419,7 @@ fn should_decide_missing_metadata_as_out_of_scope() {
 
     assert!(matches!(
         decide_epics_sync(&status, None),
-        ControlsInboundDecision::OutOfScope {
-            reason: OutOfScopeReason::MissingPhoebusMetadata,
-        }
+        ControlsInboundDecision::OutOfScope
     ));
 }
 

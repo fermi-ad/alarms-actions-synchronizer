@@ -16,9 +16,9 @@ use crate::models::alarm::status::Source;
 use crate::models::metadata::MetadataScope;
 use crate::models::phoebus::{Operation, PvMetadata};
 use crate::models::{
-    AlarmStateCache, ControlsObservedStatePolicy, IgnoreReason, OutOfScopeReason,
-    OutboundSyncResult, RuntimeSyncFactory, SyncDirection, SyncOutcome, Synchronizer,
-    SynchronizerConfig, read_controls_observed_state_policy, record_controls_observed_state,
+    AlarmStateCache, ControlsObservedStatePolicy, IgnoreReason, OutboundSyncResult,
+    RuntimeSyncFactory, SyncDirection, SyncOutcome, Synchronizer, SynchronizerConfig,
+    read_controls_observed_state_policy, record_controls_observed_state,
 };
 use crate::utils::get_command_topic;
 use rust_pubsub_lib::{Message, PubSubError, Publisher, Snapshot, StringMessage, Subscriber};
@@ -69,17 +69,17 @@ impl<P: Publisher> SyncImpl<P> {
     }
 
     /// Records a Controls update that carries no synchronization-relevant user intent for Phoebus.
-    async fn record_non_sync_controls_state(&self, controls_alarm: &Status) -> SyncOutcome {
+    async fn record_non_sync_controls_state(
+        &self,
+        controls_alarm: &Status,
+        observed_state_policy: &ControlsObservedStatePolicy,
+    ) -> SyncOutcome {
         debug!(
             "Received Controls alarm update for device {} with new state {:?} that does not require synchronization. Recording latest observed state for loop prevention and doing nothing.",
             controls_alarm.device,
             controls_alarm.state()
         );
-        record_controls_observed_state(
-            &self.alarm_states,
-            &self.observed_state_policy(controls_alarm).await,
-        )
-        .await;
+        record_controls_observed_state(&self.alarm_states, observed_state_policy).await;
         SyncOutcome::Ignored {
             reason: IgnoreReason::UnsupportedOperation,
         }
@@ -171,10 +171,11 @@ impl<P: Publisher> SyncImpl<P> {
             self.get_pv_metadata(&controls_alarm.device).await,
         ) {
             ControlsInboundDecision::IgnoreNonSyncState => {
-                self.record_non_sync_controls_state(controls_alarm).await
+                self.record_non_sync_controls_state(controls_alarm, observed_state_policy)
+                    .await
             }
-            ControlsInboundDecision::OutOfScope { reason } => {
-                handle_out_of_scope_decision(&controls_alarm.device, reason)
+            ControlsInboundDecision::OutOfScope => {
+                handle_out_of_scope_decision(&controls_alarm.device)
             }
             ControlsInboundDecision::SyncToPhoebus {
                 operation,
@@ -301,9 +302,7 @@ fn deserialize_status(msg: &StringMessage) -> Result<Status, ()> {
 #[derive(Debug)]
 enum ControlsInboundDecision {
     IgnoreNonSyncState,
-    OutOfScope {
-        reason: OutOfScopeReason,
-    },
+    OutOfScope,
     SyncToPhoebus {
         operation: Operation,
         pv_metadata: PvMetadata,
@@ -321,31 +320,22 @@ fn decide_epics_sync(
         None => return ControlsInboundDecision::IgnoreNonSyncState,
     };
 
-    let pv_metadata = match pv_metadata {
-        Some(metadata) => metadata,
-        None => {
-            return ControlsInboundDecision::OutOfScope {
-                reason: OutOfScopeReason::MissingPhoebusMetadata,
-            };
+    if let Some(pv_metadata) = pv_metadata {
+        ControlsInboundDecision::SyncToPhoebus {
+            operation,
+            pv_metadata,
         }
-    };
-
-    ControlsInboundDecision::SyncToPhoebus {
-        operation,
-        pv_metadata,
+    } else {
+        ControlsInboundDecision::OutOfScope
     }
 }
 
 /// Logs the structured out-of-scope Controls decision and maps it to the public synchronization outcome.
-fn handle_out_of_scope_decision(device: &str, reason: OutOfScopeReason) -> SyncOutcome {
-    match reason {
-        OutOfScopeReason::MissingPhoebusMetadata => {
-            warn!(
-                "Received message for EPICS device '{device}' with no matching PV metadata. Treating device as out of scope until Phoebus configuration metadata is discovered. Message will be dropped."
-            );
-            SyncOutcome::OutOfScope { reason }
-        }
-    }
+fn handle_out_of_scope_decision(device: &str) -> SyncOutcome {
+    warn!(
+        "Received message for EPICS device '{device}' with no matching PV metadata. Treating device as out of scope until Phoebus configuration metadata is discovered. Message will be dropped."
+    );
+    SyncOutcome::OutOfScope
 }
 
 /// Logs a message that the `controls_alarm` state is already up to date, so no action will be taken.

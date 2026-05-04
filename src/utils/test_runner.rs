@@ -4,14 +4,14 @@
 //! [`TestRunner`] descibes the common flow of a test case: some data appears on a given
 //! Kafka topic and the [`Synchronizer`] under test is expected to respond in a certain way.
 
-use crate::models::{Synchronizer, SynchronizerConfig, metadata::MetadataScope};
+use crate::models::{Synchronizer, SynchronizerConfig, metadata::MetadataScope, phoebus::Config};
 use rust_pubsub_lib::{
     KafkaPublisher, KafkaSnapshot, KafkaSubscriber, KafkaTestHarness, Message, Publisher,
     StringMessage,
 };
-use std::error::Error;
 use std::marker::PhantomData;
 use std::time::Duration;
+use std::{collections::HashMap, error::Error};
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 
@@ -212,8 +212,13 @@ pub async fn await_phoebus_runtime_ready(
 ) {
     let readiness_message = StringMessage::new(
         Some(format!("config:runtime/readiness/{READINESS_DEVICE}")),
-        serde_json::to_string(&crate::models::phoebus::Config::default())
-            .expect("Failed to serialize Phoebus runtime readiness config."),
+        serde_json::to_string(&Config {
+            enabled: Some(true.to_string()),
+            host: "localhost".to_string(),
+            user: "test user".to_string(),
+            phoebus_specific: HashMap::new(),
+        })
+        .expect("Failed to serialize Phoebus runtime readiness config."),
     );
 
     send_test_message(

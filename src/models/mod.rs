@@ -47,14 +47,12 @@ pub use google::protobuf as generated;
 pub use cache::{
     AlarmStateCache, CachedState, ControlsObservedStatePolicy, PhoebusObservedStatePolicy,
     read_controls_observed_state_policy, read_phoebus_observed_state_policy,
-    record_config_hydrated_state, record_controls_observed_state, record_phoebus_observed_state,
-    record_state_hydrated_state,
+    record_controls_observed_state, record_phoebus_observed_state, record_startup_config_state,
+    record_startup_state_evidence,
 };
 
 pub use config::{
     ConfigLoadError, LoggingInitError, RuntimeSyncFactory, Synchronizer, SynchronizerConfig,
 };
 
-pub use outcomes::{
-    IgnoreReason, OutOfScopeReason, OutboundSyncResult, SkipReason, SyncDirection, SyncOutcome,
-};
+pub use outcomes::{IgnoreReason, OutboundSyncResult, SkipReason, SyncDirection, SyncOutcome};

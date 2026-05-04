@@ -48,7 +48,7 @@ Phoebus messages are not all equally relevant:
 - command-topic messages are relevant for acknowledgement semantics after startup
 - startup `state` messages are used only as secondary evidence to infer the best available initial acknowledgement status for already discovered or eventually discovered devices
 - runtime `state` messages are treated as non-sync noise and do not drive bypass/snooze synchronization decisions
-- other Phoebus message classes are treated as non-sync noise unless a later stage explicitly promotes them
+- other Phoebus message classes are treated as non-sync noise
 
 This split matters because the same Kafka family contains both user-intent-bearing records and mostly noisy server-state traffic.
 
@@ -97,8 +97,6 @@ This distinguishes between cases such as:
 - skipped work because capability or routing was unavailable
 - attempted synchronization
 - startup hydration
-
-Stage 1 keeps the existing anti-loop behavior while making those semantics explicit for later stages.
 
 ## Note to developers
 

@@ -23,7 +23,7 @@ async fn should_write_state_when_no_existing_entry() {
         wake: None,
     };
 
-    record_state_hydrated_state(&cache, "MyDevice", state.clone()).await;
+    record_startup_state_evidence(&cache, "MyDevice", state.clone()).await;
 
     let stored = cache.read().await.get("MyDevice").cloned();
     assert_eq!(stored, Some(state));
@@ -52,7 +52,7 @@ async fn should_preserve_snoozed_entry_when_state_record_conflicts() {
         state: State::Ok,
         wake: None,
     };
-    record_state_hydrated_state(&cache, "MyDevice", conflicting).await;
+    record_startup_state_evidence(&cache, "MyDevice", conflicting).await;
 
     // The snoozed entry must be preserved; the state record must not overwrite it.
     let stored = cache.read().await.get("MyDevice").cloned();
@@ -78,7 +78,7 @@ async fn should_preserve_bypassed_entry_without_wake_when_state_record_conflicts
         state: State::Ok,
         wake: None,
     };
-    record_state_hydrated_state(&cache, "MyDevice", conflicting).await;
+    record_startup_state_evidence(&cache, "MyDevice", conflicting).await;
 
     // The Bypassed entry must be preserved.
     let stored = cache.read().await.get("MyDevice").cloned();

@@ -46,7 +46,10 @@ fn should_decide_duplicate_acknowledgement_command() {
     assert_eq!(
         decide_phoebus_command(
             &serde_json::to_string(&command).unwrap(),
-            &PhoebusObservedStatePolicy::acknowledged(),
+            &PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+                state: State::Acknowledged,
+                wake: None,
+            })),
         ),
         Ok(PhoebusCommandDecision::DuplicateAcknowledgement)
     );
@@ -302,7 +305,10 @@ fn should_treat_observed_acknowledged_state_as_duplicate_acknowledgement() {
     assert_eq!(
         decide_phoebus_command(
             &serde_json::to_string(&command).unwrap(),
-            &PhoebusObservedStatePolicy::acknowledged(),
+            &PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+                state: State::Acknowledged,
+                wake: None,
+            })),
         ),
         Ok(PhoebusCommandDecision::DuplicateAcknowledgement)
     );
@@ -310,7 +316,10 @@ fn should_treat_observed_acknowledged_state_as_duplicate_acknowledgement() {
 
 #[test]
 fn should_treat_observed_acknowledged_state_as_effectively_active_for_config_policy() {
-    let policy = PhoebusObservedStatePolicy::acknowledged();
+    let policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    }));
     assert!(!policy.suppresses_bypass_duplicate(&CachedState::bypassed()));
     assert!(policy.suppresses_activation_duplicate());
 }

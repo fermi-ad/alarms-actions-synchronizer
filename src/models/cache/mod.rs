@@ -162,14 +162,6 @@ impl PhoebusObservedStatePolicy {
         Self { observed }
     }
 
-    /// Returns the shared policy representing an acknowledgement command accepted from Phoebus.
-    pub fn acknowledged() -> Self {
-        Self::from_cache_entry(Some(CachedState {
-            state: State::Acknowledged,
-            wake: None,
-        }))
-    }
-
     /// Returns the shared policy representing a Phoebus config update whose latest observed state should be stored.
     pub fn for_config_record(updated_state: CachedState) -> Self {
         Self::from_cache_entry(Some(updated_state))
@@ -247,7 +239,7 @@ pub async fn record_observed_alarm_state(
 ///
 /// Config records are the authoritative source for bypass/snooze semantics and always overwrite any
 /// previously cached entry for the device.
-pub async fn record_config_hydrated_state(
+pub async fn record_startup_config_state(
     cache: &AlarmStateCache,
     device: &str,
     state: CachedState,
@@ -261,7 +253,7 @@ pub async fn record_config_hydrated_state(
 /// State records are secondary startup evidence. If the cache already holds a `Bypassed` entry
 /// (written by a config record), this write is skipped so the stronger config-derived semantics
 /// are not erased by weaker state-record evidence.
-pub async fn record_state_hydrated_state(
+pub async fn record_startup_state_evidence(
     cache: &AlarmStateCache,
     device: &str,
     state: CachedState,

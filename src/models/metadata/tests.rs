@@ -28,19 +28,17 @@ async fn lookup_metadata_by_device_returns_metadata_when_present() {
     assert_eq!(result, Some(metadata));
 }
 
-#[tokio::test]
-async fn discover_metadata_from_config_creates_metadata_with_normalized_topic() {
-    let scope = MetadataScope::new();
-
+#[test]
+fn build_metadata_from_config_creates_metadata_with_normalized_topic() {
     let key = Key::parse("config:/path/to/alarm/device1").unwrap();
     let config = Config::default();
 
     // Test with Command suffix
-    let metadata = scope.build_metadata_from_config(&key, &config, "testCommand");
+    let metadata = build_metadata_from_config(&key, &config, "testCommand");
     assert_eq!(metadata.phoebus_topic, "test");
 
     // Test without Command suffix
-    let metadata = scope.build_metadata_from_config(&key, &config, "test-topic");
+    let metadata = build_metadata_from_config(&key, &config, "test-topic");
     assert_eq!(metadata.phoebus_topic, "test-topic");
 }
 

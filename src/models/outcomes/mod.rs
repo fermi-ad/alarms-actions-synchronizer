@@ -18,7 +18,7 @@ pub enum SyncOutcome {
     Ignored { reason: IgnoreReason },
 
     /// The device is currently out of scope because Phoebus configuration metadata is not known.
-    OutOfScope { reason: OutOfScopeReason },
+    OutOfScope,
 
     /// A synchronization attempt was skipped even though the message was otherwise relevant.
     Skipped { reason: SkipReason },
@@ -49,13 +49,6 @@ pub enum IgnoreReason {
     UnsupportedOperation,
     /// A Phoebus message class was recognized as server-state or otherwise irrelevant noise.
     PhoebusNoise,
-}
-
-/// Why a device was treated as out of scope.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum OutOfScopeReason {
-    /// No Phoebus configuration metadata is known for this EPICS device yet.
-    MissingPhoebusMetadata,
 }
 
 /// Why a synchronization-relevant action was skipped.

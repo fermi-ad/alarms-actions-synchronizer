@@ -16,7 +16,7 @@
 //! external blocker clearly, and intentionally skips unavailable Controls propagation.
 
 use crate::models::alarm::status::State;
-use crate::models::metadata::MetadataScope;
+use crate::models::metadata::{MetadataScope, build_metadata_from_config};
 use crate::models::phoebus::{
     Command, Config, Key, KeyParseError, Operation, PhoebusParseError, PvMetadata,
 };
@@ -102,10 +102,7 @@ impl Monitor {
         self.metadata_scope
             .lookup_metadata_by_device(&key.device)
             .await
-            .unwrap_or_else(|| {
-                self.metadata_scope
-                    .build_metadata_from_config(key, &Config::default(), &self.topic)
-            })
+            .unwrap_or_else(|| build_metadata_from_config(key, &Config::default(), &self.topic))
     }
 
     /// Handles the transitional local-only path for a Phoebus config that re-activates a previously bypassed alarm.
@@ -214,7 +211,10 @@ impl Monitor {
                 record_phoebus_observed_state(
                     &self.alarm_states,
                     &key.device,
-                    &PhoebusObservedStatePolicy::acknowledged(),
+                    &PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+                        state: State::Acknowledged,
+                        wake: None,
+                    })),
                 )
                 .await;
 

@@ -18,7 +18,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::RwLock;
 
-use crate::models::phoebus::{Config, PvMetadata};
+use crate::models::phoebus::{Config, Key, PvMetadata};
 
 #[cfg(test)]
 mod tests;
@@ -60,36 +60,6 @@ impl MetadataScope {
         self.pv_metadata.read().await.get(device).cloned()
     }
 
-    /// Creates PV metadata from a Phoebus configuration message.
-    ///
-    /// This method is used when Phoebus config traffic discovers a new device
-    /// at runtime. The metadata includes:
-    /// - The configuration from the message
-    /// - The display path extracted from the key
-    /// - The normalized topic name (stripping "Command" suffix if present)
-    ///
-    /// # Arguments
-    ///
-    /// - `key`: The parsed Phoebus Kafka key containing operation, display_path, and device
-    /// - `config`: The configuration from the Phoebus message
-    /// - `topic`: The Phoebus topic name (will be normalized by stripping "Command" suffix)
-    ///
-    /// # Returns
-    ///
-    /// A new `PvMetadata` instance with the provided configuration and derived fields.
-    pub fn build_metadata_from_config(
-        &self,
-        key: &crate::models::phoebus::Key,
-        config: &Config,
-        topic: &str,
-    ) -> PvMetadata {
-        PvMetadata {
-            config: config.clone(),
-            display_path: key.display_path.clone(),
-            phoebus_topic: Self::normalize_topic(topic),
-        }
-    }
-
     /// Updates the cached metadata for a device.
     ///
     /// This method is used to persist new metadata (from runtime discovery)
@@ -105,26 +75,51 @@ impl MetadataScope {
             .await
             .insert(device.to_string(), new_metadata);
     }
-
-    /// Normalizes a Phoebus topic name by stripping the "Command" suffix if present.
-    ///
-    /// This ensures consistent topic naming regardless of whether the original
-    /// topic was a command topic or a config/state topic.
-    ///
-    /// # Arguments
-    ///
-    /// - `topic`: The topic name to normalize
-    ///
-    /// # Returns
-    ///
-    /// The normalized topic name (without "Command" suffix).
-    fn normalize_topic(topic: &str) -> String {
-        topic.strip_suffix("Command").unwrap_or(topic).to_owned()
-    }
 }
 
 impl PartialEq for MetadataScope {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.pv_metadata, &other.pv_metadata)
     }
+}
+
+/// Creates PV metadata from a Phoebus configuration message.
+///
+/// This method is used when Phoebus config traffic discovers a new device
+/// at runtime. The metadata includes:
+/// - The configuration from the message
+/// - The display path extracted from the key
+/// - The normalized topic name (stripping "Command" suffix if present)
+///
+/// # Arguments
+///
+/// - `key`: The parsed Phoebus Kafka key containing operation, display_path, and device
+/// - `config`: The configuration from the Phoebus message
+/// - `topic`: The Phoebus topic name (will be normalized by stripping "Command" suffix)
+///
+/// # Returns
+///
+/// A new `PvMetadata` instance with the provided configuration and derived fields.
+pub fn build_metadata_from_config(key: &Key, config: &Config, topic: &str) -> PvMetadata {
+    PvMetadata {
+        config: config.clone(),
+        display_path: key.display_path.clone(),
+        phoebus_topic: normalize_topic(topic),
+    }
+}
+
+/// Normalizes a Phoebus topic name by stripping the "Command" suffix if present.
+///
+/// This ensures consistent topic naming regardless of whether the original
+/// topic was a command topic or a config/state topic.
+///
+/// # Arguments
+///
+/// - `topic`: The topic name to normalize
+///
+/// # Returns
+///
+/// The normalized topic name (without "Command" suffix).
+fn normalize_topic(topic: &str) -> String {
+    topic.strip_suffix("Command").unwrap_or(topic).to_owned()
 }

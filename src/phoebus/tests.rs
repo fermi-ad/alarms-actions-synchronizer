@@ -556,7 +556,7 @@ async fn should_not_sync_already_bypassed_config() {
         .test_config
         .metadata_scope
         .update_cached_metadata(
-            "MyDevice",
+            "AlreadyBypassedDevice",
             PvMetadata {
                 config: initial_config,
                 display_path: String::from("cached/display"),
@@ -565,7 +565,7 @@ async fn should_not_sync_already_bypassed_config() {
         )
         .await;
     test_instance.test_config.alarm_states.write().await.insert(
-        String::from("MyDevice"),
+        String::from("AlreadyBypassedDevice"),
         CachedState {
             state: State::Bypassed,
             wake: None,
@@ -578,18 +578,18 @@ async fn should_not_sync_already_bypassed_config() {
     };
 
     let message = StringMessage::new(
-        Some(String::from("config:path/to/MyDevice")),
+        Some(String::from("config:cached/display/AlreadyBypassedDevice")),
         serde_json::to_string(&config).unwrap(),
     );
     let expected_topic = test_instance.test_config.phoebus_topics[0].clone();
     test_instance
         .has(message)
         .after_init_results_in(async move || {
-            metadata_scope.lookup_metadata_by_device("MyDevice").await.is_some_and(|metadata| {
+            metadata_scope.lookup_metadata_by_device("AlreadyBypassedDevice").await.is_some_and(|metadata| {
                 metadata.config == config
                     && metadata.display_path == "cached/display"
                     && metadata.phoebus_topic == expected_topic
-            }) && alarm_states.read().await.get("MyDevice")
+            }) && alarm_states.read().await.get("AlreadyBypassedDevice")
                 == Some(&CachedState {
                     state: State::Bypassed,
                     wake: None,

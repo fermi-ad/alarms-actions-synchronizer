@@ -57,7 +57,10 @@ fn should_match_observed_alarm_state_against_controls_status_by_state_and_wake()
 fn should_build_acknowledged_observed_state_for_command_policy() {
     // PhoebusObservedStatePolicy::acknowledged() represents the acknowledged state
     // used for duplicate suppression of acknowledgement commands.
-    let policy = PhoebusObservedStatePolicy::acknowledged();
+    let policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    }));
     assert!(policy.suppresses_acknowledgement_duplicate());
     assert_eq!(
         policy.recorded_state(),
@@ -70,7 +73,10 @@ fn should_build_acknowledged_observed_state_for_command_policy() {
 
 #[test]
 fn should_treat_acknowledged_observed_state_as_duplicate_for_command_policy() {
-    let acked = PhoebusObservedStatePolicy::acknowledged();
+    let acked = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    }));
     assert!(acked.suppresses_acknowledgement_duplicate());
 
     let ok_policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
@@ -86,7 +92,10 @@ fn should_treat_acknowledged_observed_state_as_duplicate_for_command_policy() {
 
 #[test]
 fn should_treat_any_non_bypassed_observed_state_as_effectively_active_for_config_policy() {
-    let acked = PhoebusObservedStatePolicy::acknowledged();
+    let acked = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    }));
     assert!(acked.suppresses_activation_duplicate());
 
     let ok_policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
@@ -110,7 +119,7 @@ fn should_define_phoebus_acknowledgement_policy_duplicate_and_recorded_state() {
 
     assert!(policy.suppresses_acknowledgement_duplicate());
     assert_eq!(
-        PhoebusObservedStatePolicy::acknowledged().recorded_state(),
+        policy.recorded_state(),
         Some(CachedState {
             state: State::Acknowledged,
             wake: None,
@@ -165,7 +174,13 @@ fn should_preserve_active_state_asymmetry_in_phoebus_config_policy() {
         },))
         .suppresses_activation_duplicate()
     );
-    assert!(PhoebusObservedStatePolicy::acknowledged().suppresses_activation_duplicate());
+    assert!(
+        PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+            state: State::Acknowledged,
+            wake: None,
+        }))
+        .suppresses_activation_duplicate()
+    );
     assert!(
         !PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState::bypassed(),))
             .suppresses_activation_duplicate()
@@ -249,7 +264,10 @@ async fn should_read_phoebus_observed_state_policy_from_latest_cache_entry() {
 #[tokio::test]
 async fn should_record_phoebus_observed_state_from_policy_recorded_state() {
     let cache = Arc::new(RwLock::new(HashMap::new()));
-    let policy = PhoebusObservedStatePolicy::acknowledged();
+    let policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    }));
 
     record_phoebus_observed_state(&cache, "device", &policy).await;
 

@@ -16,7 +16,7 @@ use crate::models::{
     alarm::status::State,
     metadata::MetadataScope,
     phoebus::{Config, Key, KeyParseError, Operation, PvMetadata},
-    record_config_hydrated_state, record_state_hydrated_state,
+    record_startup_config_state, record_startup_state_evidence,
 };
 use rust_pubsub_lib::{Message, Snapshot, StringMessage};
 use serde_json::Value;
@@ -154,7 +154,7 @@ async fn handle_config(
             };
         }
     };
-    record_config_hydrated_state(state_cache, &key.device, alarm_state).await;
+    record_startup_config_state(state_cache, &key.device, alarm_state).await;
     metadata_scope
         .update_cached_metadata(
             &key.device,
@@ -195,7 +195,7 @@ async fn handle_state(state_cache: &AlarmStateCache, key: Key, value: String) ->
                 }
             };
 
-            record_state_hydrated_state(
+            record_startup_state_evidence(
                 state_cache,
                 &key.device,
                 CachedState { state, wake: None },
