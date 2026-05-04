@@ -40,12 +40,16 @@ pub fn controls_to_phoebus(
             host: CONTROLS_HOST.to_string(),
             command: ACK_COMMAND.to_string(),
         }),
-        Operation::Config => serde_json::to_string(&Config {
-            user: controls_alarm.user.clone(),
-            host: CONTROLS_HOST.to_string(),
-            enabled: normalized_enablement_from_controls(controls_alarm).as_enabled_string(),
-            phoebus_specific: metadata.config.phoebus_specific.clone(),
-        }),
+        Operation::Config => {
+            let updated_enabled =
+                normalized_enablement_from_controls(controls_alarm).as_enabled_string();
+            serde_json::to_string(&Config {
+                enabled: updated_enabled,
+                host: CONTROLS_HOST.to_string(),
+                user: controls_alarm.user.clone(),
+                ..metadata.config.clone()
+            })
+        }
         Operation::State => return Err(Operation::unsupported_sync_action_error()),
     }
     .map_err(|e| format!("{e:?}"))?;

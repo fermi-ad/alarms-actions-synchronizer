@@ -10,12 +10,12 @@ use crate::models::{
 
 #[test]
 fn should_decide_malformed_phoebus_command_as_skipped_parse_error() {
-    assert_eq!(
+    assert!(
         decide_phoebus_command(
             "{ \"notRealCommandMessage\": \"Should not parse\" }",
             &PhoebusObservedStatePolicy::from_cache_entry(None),
-        ),
-        Err(PhoebusParseError::MalformedMessage)
+        )
+        .is_err()
     );
 }
 
@@ -55,12 +55,12 @@ fn should_decide_duplicate_acknowledgement_command() {
 
 #[test]
 fn should_decide_malformed_phoebus_config_as_skipped_parse_error() {
-    assert_eq!(
+    assert!(
         decide_phoebus_config(
             "{ \"notRealConfigMessage\": \"Should not parse\" }",
             &Config::default(),
-        ),
-        Err(PhoebusParseError::MalformedMessage)
+        )
+        .is_err()
     );
 }
 
@@ -170,12 +170,12 @@ fn should_decide_invalid_enablement_phoebus_config_as_malformed() {
         ..Config::default()
     };
 
-    assert_eq!(
+    assert!(
         decide_phoebus_config(
             &serde_json::to_string(&incoming_config).unwrap(),
             &cached_config,
-        ),
-        Err(PhoebusParseError::MalformedMessage)
+        )
+        .is_err()
     );
 }
 
@@ -251,7 +251,9 @@ fn should_map_malformed_phoebus_command_to_skipped_outcome() {
             "command",
             &key,
             "{ malformed",
-            PhoebusParseError::MalformedMessage
+            PhoebusParseError::MalformedMessage {
+                cause: String::new()
+            }
         ),
         SyncOutcome::Skipped {
             reason: SkipReason::MalformedMessage,
@@ -272,7 +274,9 @@ fn should_map_malformed_phoebus_config_to_skipped_outcome() {
             "config",
             &key,
             "{ malformed",
-            PhoebusParseError::MalformedMessage
+            PhoebusParseError::MalformedMessage {
+                cause: String::new()
+            }
         ),
         SyncOutcome::Skipped {
             reason: SkipReason::MalformedMessage,
@@ -332,7 +336,7 @@ fn should_treat_observed_bypass_state_as_duplicate_bypass_config() {
 fn should_treat_observed_acknowledged_state_as_effectively_active_for_config_policy() {
     let policy = PhoebusObservedStatePolicy::acknowledged();
     assert!(!policy.suppresses_bypass_duplicate(&CachedState::bypassed()));
-    assert!(policy.is_already_active());
+    assert!(policy.suppresses_activation_duplicate());
 }
 
 #[test]

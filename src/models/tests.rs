@@ -89,19 +89,19 @@ fn should_treat_acknowledged_observed_state_as_duplicate_for_command_policy() {
 #[test]
 fn should_treat_any_non_bypassed_observed_state_as_effectively_active_for_config_policy() {
     let acked = PhoebusObservedStatePolicy::acknowledged();
-    assert!(acked.is_already_active());
+    assert!(acked.suppresses_activation_duplicate());
 
     let ok_policy =
         PhoebusObservedStatePolicy::from_cache_entry(Some(ObservedAlarmState::new(CachedState {
             state: State::Ok,
             wake: None,
         })));
-    assert!(ok_policy.is_already_active());
+    assert!(ok_policy.suppresses_activation_duplicate());
 
     let bypassed_policy = PhoebusObservedStatePolicy::from_cache_entry(Some(
         ObservedAlarmState::new(CachedState::bypassed()),
     ));
-    assert!(!bypassed_policy.is_already_active());
+    assert!(!bypassed_policy.suppresses_activation_duplicate());
 }
 
 #[test]
@@ -168,16 +168,16 @@ fn should_preserve_active_state_asymmetry_in_phoebus_config_policy() {
             state: State::Ok,
             wake: None,
         },)))
-        .is_already_active()
+        .suppresses_activation_duplicate()
     );
-    assert!(PhoebusObservedStatePolicy::acknowledged().is_already_active());
+    assert!(PhoebusObservedStatePolicy::acknowledged().suppresses_activation_duplicate());
     assert!(
         !PhoebusObservedStatePolicy::from_cache_entry(Some(ObservedAlarmState::new(
             CachedState::bypassed(),
         )))
-        .is_already_active()
+        .suppresses_activation_duplicate()
     );
-    assert!(!PhoebusObservedStatePolicy::from_cache_entry(None).is_already_active());
+    assert!(!PhoebusObservedStatePolicy::from_cache_entry(None).suppresses_activation_duplicate());
 }
 
 #[test]

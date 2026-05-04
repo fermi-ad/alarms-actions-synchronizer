@@ -161,7 +161,11 @@ impl<P: Publisher> SyncImpl<P> {
     }
 
     /// The general steps for processing an EPICS device with updated state.
-    async fn process_epics_message(&self, controls_alarm: &Status) -> SyncOutcome {
+    async fn process_epics_message(
+        &self,
+        controls_alarm: &Status,
+        observed_state_policy: &ControlsObservedStatePolicy,
+    ) -> SyncOutcome {
         match decide_epics_sync(
             controls_alarm,
             self.get_pv_metadata(&controls_alarm.device).await,
@@ -184,11 +188,7 @@ impl<P: Publisher> SyncImpl<P> {
                     "Refreshing latest observed Controls state for device {} after outbound result {:?} to preserve duplicate suppression and loop prevention.",
                     controls_alarm.device, outbound_result
                 );
-                record_controls_observed_state(
-                    &self.alarm_states,
-                    &self.observed_state_policy(controls_alarm).await,
-                )
-                .await;
+                record_controls_observed_state(&self.alarm_states, observed_state_policy).await;
 
                 outbound_result.into_sync_outcome(SyncDirection::ControlsToPhoebus)
             }
@@ -204,7 +204,8 @@ impl<P: Publisher> SyncImpl<P> {
             return Ok(SyncOutcome::Duplicate);
         }
         let outcome = if controls_alarm.source() == Source::Epics {
-            self.process_epics_message(&controls_alarm).await
+            self.process_epics_message(&controls_alarm, &observed_state_policy)
+                .await
         } else {
             debug!(
                 "Received ACNET device {}. Recording latest observed state for loop prevention and doing nothing.",

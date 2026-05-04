@@ -33,53 +33,43 @@ fn serde_json_deserializes_config_enabled_as_string() {
 
 #[test]
 fn should_normalize_config_enablement_variants() {
-    let config = Config {
+    let mut config = Config {
         enabled: None,
         ..Config::default()
     };
-    assert_eq!(
-        config.normalized_enablement(),
-        Ok(NormalizedEnablement::Bypassed)
-    );
+    config.normalize_enablement().unwrap();
+    assert_eq!(config.normalized_enablement, NormalizedEnablement::Bypassed);
 
-    let config = Config {
+    let mut config = Config {
         enabled: Some(false.to_string()),
         ..Config::default()
     };
-    assert_eq!(
-        config.normalized_enablement(),
-        Ok(NormalizedEnablement::Bypassed)
-    );
+    config.normalize_enablement().unwrap();
+    assert_eq!(config.normalized_enablement, NormalizedEnablement::Bypassed);
 
-    let config = Config {
+    let mut config = Config {
         enabled: Some(true.to_string()),
         ..Config::default()
     };
-    assert_eq!(
-        config.normalized_enablement(),
-        Ok(NormalizedEnablement::Active)
-    );
+    config.normalize_enablement().unwrap();
+    assert_eq!(config.normalized_enablement, NormalizedEnablement::Active);
 
     let timestamp = "2000-01-01T00:00:00.000Z";
-    let config = Config {
+    let mut config = Config {
         enabled: Some(timestamp.to_owned()),
         ..Config::default()
     };
+    config.normalize_enablement().unwrap();
     assert_eq!(
-        config.normalized_enablement(),
-        Ok(NormalizedEnablement::SnoozedUntil(
-            DateTime::parse_from_rfc3339(timestamp).unwrap()
-        ))
+        config.normalized_enablement,
+        NormalizedEnablement::SnoozedUntil(DateTime::parse_from_rfc3339(timestamp).unwrap())
     );
 
-    let config = Config {
+    let mut config = Config {
         enabled: Some("Corrupted data".to_owned()),
         ..Config::default()
     };
-    assert_eq!(
-        config.normalized_enablement(),
-        Err(PhoebusParseError::MalformedMessage)
-    );
+    assert!(config.normalize_enablement().is_err());
 }
 
 #[test]
@@ -133,15 +123,17 @@ fn should_reject_malformed_or_unsupported_keys() {
 
 #[test]
 fn should_get_cached_state_from_config() {
-    let config = Config::default();
-    let result = config.as_cached_state().unwrap();
+    let mut config = Config::default();
+    config.normalize_enablement().unwrap();
+    let result = config.as_cached_state();
     assert_eq!(CachedState::bypassed(), result);
 
-    let config = Config {
+    let mut config = Config {
         enabled: Some(true.to_string()),
         ..Config::default()
     };
-    let result = config.as_cached_state().unwrap();
+    config.normalize_enablement().unwrap();
+    let result = config.as_cached_state();
     assert_eq!(
         CachedState {
             state: State::Ok,
@@ -150,18 +142,12 @@ fn should_get_cached_state_from_config() {
         result
     );
 
-    let config = Config {
-        enabled: Some("Corrupted data".to_owned()),
-        ..Config::default()
-    };
-    let result = config.as_cached_state().unwrap_err();
-    assert_eq!(PhoebusParseError::MalformedMessage, result);
-
-    let config = Config {
+    let mut config = Config {
         enabled: Some("2000-01-01T00:00:00.000Z".to_owned()),
         ..Config::default()
     };
-    let result = config.as_cached_state().unwrap();
+    config.normalize_enablement().unwrap();
+    let result = config.as_cached_state();
     assert_eq!(
         CachedState {
             state: State::Ok,

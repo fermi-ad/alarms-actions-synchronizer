@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::models::generated::Timestamp;
+use crate::models::phoebus::Config;
 
 #[test]
 fn should_convert_command() {

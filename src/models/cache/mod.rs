@@ -209,7 +209,7 @@ impl PhoebusObservedStatePolicy {
 
     /// Returns whether the current observed cache entry should treat Phoebus re-activation as already recorded
     /// for the current asymmetric config policy.
-    pub fn is_already_active(&self) -> bool {
+    pub fn suppresses_activation_duplicate(&self) -> bool {
         self.observed
             .as_ref()
             .is_some_and(|observed| observed.state.state != State::Bypassed)

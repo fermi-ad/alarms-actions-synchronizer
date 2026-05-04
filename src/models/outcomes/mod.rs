@@ -49,8 +49,6 @@ pub enum IgnoreReason {
     UnsupportedOperation,
     /// A Phoebus message class was recognized as server-state or otherwise irrelevant noise.
     PhoebusNoise,
-    /// A Phoebus message was not able to be parsed to actionable data.
-    MalformedMessage,
 }
 
 /// Why a device was treated as out of scope.
