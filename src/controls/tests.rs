@@ -6,11 +6,10 @@ use rust_pubsub_lib::{KafkaPublisher, KafkaSubscriber, StringMessage};
 
 use super::*;
 use crate::models::alarm::status::State;
-use crate::models::cache::ObservedAlarmState;
 use crate::models::outcomes::AttemptResult;
 use crate::models::phoebus::{Command, Config, Operation, PvMetadata};
 use crate::models::{
-    ACK_COMMAND, OutOfScopeReason, SkipReason, SyncDirection, SyncOutcome,
+    ACK_COMMAND, CachedState, OutOfScopeReason, SkipReason, SyncDirection, SyncOutcome,
     read_controls_observed_state_policy, record_controls_observed_state,
 };
 use crate::utils::test_runner::{MessageOrigin, TestRunner};
@@ -109,7 +108,7 @@ async fn should_treat_epics_device_without_phoebus_metadata_as_out_of_scope() {
         .await
         .insert(String::new(), cached_status.clone().into());
     let cache = Arc::clone(&sync.alarm_states);
-    let expected_cached = ObservedAlarmState::from_status(&cached_status).into_cached_state();
+    let expected_cached = CachedState::from_status(&cached_status);
 
     test_instance
         .has(message)
@@ -150,7 +149,7 @@ async fn should_not_sync_when_alarm_state_is_not_syncable() {
         state: State::Ok.into(),
         ..status
     };
-    let expected_cached = ObservedAlarmState::from_status(&expected_status).into_cached_state();
+    let expected_cached = CachedState::from_status(&expected_status);
     let message = StringMessage::from_value(serde_json::to_string(&expected_status).unwrap());
     let cache = Arc::clone(&sync.alarm_states);
 
@@ -190,7 +189,7 @@ async fn should_treat_unchanged_state_as_duplicate() {
         .await
         .insert(String::new(), status.clone().into());
     let cache = Arc::clone(&sync.alarm_states);
-    let expected_cached = ObservedAlarmState::from_status(&status).into_cached_state();
+    let expected_cached = CachedState::from_status(&status);
 
     test_instance
         .has(message)
@@ -228,11 +227,10 @@ async fn should_not_sync_when_no_publisher_for_topic() {
         .await
         .insert(String::new(), status.clone().into());
 
-    let expected_cached = ObservedAlarmState::from_status(&Status {
+    let expected_cached = CachedState::from_status(&Status {
         state: State::Acknowledged.into(),
         ..status.clone()
-    })
-    .into_cached_state();
+    });
     let cache = Arc::clone(&sync.alarm_states);
 
     let message = StringMessage::from_value(
@@ -261,7 +259,7 @@ async fn should_record_acnet_device_without_transmitting() {
         ..Status::default()
     };
 
-    let expected_cached = ObservedAlarmState::from_status(&status).into_cached_state();
+    let expected_cached = CachedState::from_status(&status);
     let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
     let test_instance = get_test_instance().await;
@@ -355,10 +353,10 @@ async fn should_read_controls_policy_duplicate_only_for_exact_match() {
     let policy = read_controls_observed_state_policy(&sync.alarm_states, &status).await;
     assert!(!policy.suppresses_duplicate());
 
-    sync.alarm_states.write().await.insert(
-        status.device.clone(),
-        ObservedAlarmState::from_status(&status).into_cached_state(),
-    );
+    sync.alarm_states
+        .write()
+        .await
+        .insert(status.device.clone(), CachedState::from_status(&status));
 
     let policy = read_controls_observed_state_policy(&sync.alarm_states, &status).await;
     assert!(policy.suppresses_duplicate());
@@ -389,7 +387,7 @@ async fn should_record_controls_policy_latest_incoming_state_for_local_only_path
 
     assert_eq!(
         sync.alarm_states.read().await.get(&status.device).cloned(),
-        Some(ObservedAlarmState::from_status(&status).into_cached_state())
+        Some(CachedState::from_status(&status))
     );
 }
 

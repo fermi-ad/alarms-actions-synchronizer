@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::models::alarm::status::{Source, State};
-use crate::models::cache::{ObservedAlarmState, read_observed_alarm_state};
+use crate::models::cache::read_observed_alarm_state;
 use crate::models::generated::Timestamp;
 
 #[test]
@@ -44,7 +44,7 @@ fn should_match_observed_alarm_state_against_controls_status_by_state_and_wake()
         ..alarm::Status::default()
     };
 
-    let observed_state = ObservedAlarmState::from_status(&status);
+    let observed_state = CachedState::from_status(&status);
 
     assert!(observed_state.matches(&status.clone().into()));
     assert!(!observed_state.matches(&CachedState {
@@ -61,10 +61,10 @@ fn should_build_acknowledged_observed_state_for_command_policy() {
     assert!(policy.suppresses_acknowledgement_duplicate());
     assert_eq!(
         policy.recorded_state(),
-        Some(ObservedAlarmState::new(CachedState {
+        Some(CachedState {
             state: State::Acknowledged,
             wake: None,
-        }))
+        })
     );
 }
 
@@ -73,16 +73,14 @@ fn should_treat_acknowledged_observed_state_as_duplicate_for_command_policy() {
     let acked = PhoebusObservedStatePolicy::acknowledged();
     assert!(acked.suppresses_acknowledgement_duplicate());
 
-    let ok_policy =
-        PhoebusObservedStatePolicy::from_cache_entry(Some(ObservedAlarmState::new(CachedState {
-            state: State::Ok,
-            wake: None,
-        })));
+    let ok_policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+        state: State::Ok,
+        wake: None,
+    }));
     assert!(!ok_policy.suppresses_acknowledgement_duplicate());
 
-    let bypassed_policy = PhoebusObservedStatePolicy::from_cache_entry(Some(
-        ObservedAlarmState::new(CachedState::bypassed()),
-    ));
+    let bypassed_policy =
+        PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState::bypassed()));
     assert!(!bypassed_policy.suppresses_acknowledgement_duplicate());
 }
 
@@ -91,34 +89,32 @@ fn should_treat_any_non_bypassed_observed_state_as_effectively_active_for_config
     let acked = PhoebusObservedStatePolicy::acknowledged();
     assert!(acked.suppresses_activation_duplicate());
 
-    let ok_policy =
-        PhoebusObservedStatePolicy::from_cache_entry(Some(ObservedAlarmState::new(CachedState {
-            state: State::Ok,
-            wake: None,
-        })));
+    let ok_policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+        state: State::Ok,
+        wake: None,
+    }));
     assert!(ok_policy.suppresses_activation_duplicate());
 
-    let bypassed_policy = PhoebusObservedStatePolicy::from_cache_entry(Some(
-        ObservedAlarmState::new(CachedState::bypassed()),
-    ));
+    let bypassed_policy =
+        PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState::bypassed()));
     assert!(!bypassed_policy.suppresses_activation_duplicate());
 }
 
 #[test]
 fn should_define_phoebus_acknowledgement_policy_duplicate_and_recorded_state() {
-    let cached_entry = Some(ObservedAlarmState::new(CachedState {
+    let cached_entry = Some(CachedState {
         state: State::Acknowledged,
         wake: None,
-    }));
+    });
     let policy = PhoebusObservedStatePolicy::from_cache_entry(cached_entry);
 
     assert!(policy.suppresses_acknowledgement_duplicate());
     assert_eq!(
         PhoebusObservedStatePolicy::acknowledged().recorded_state(),
-        Some(ObservedAlarmState::new(CachedState {
+        Some(CachedState {
             state: State::Acknowledged,
             wake: None,
-        }))
+        })
     );
 }
 
@@ -135,7 +131,7 @@ fn should_build_phoebus_config_record_observed_state() {
 
     assert_eq!(
         PhoebusObservedStatePolicy::for_config_record(updated_state.clone()).recorded_state(),
-        Some(ObservedAlarmState::new(updated_state.clone()))
+        Some(updated_state)
     );
 }
 
@@ -145,11 +141,10 @@ fn should_define_phoebus_bypass_duplicate_by_exact_cached_state() {
         seconds: 555,
         nanos: 1,
     });
-    let policy =
-        PhoebusObservedStatePolicy::from_cache_entry(Some(ObservedAlarmState::new(CachedState {
-            state: State::Bypassed,
-            wake: wake.clone(),
-        })));
+    let policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+        state: State::Bypassed,
+        wake: wake.clone(),
+    }));
 
     assert!(policy.suppresses_bypass_duplicate(&CachedState {
         state: State::Bypassed,
@@ -164,18 +159,16 @@ fn should_define_phoebus_bypass_duplicate_by_exact_cached_state() {
 #[test]
 fn should_preserve_active_state_asymmetry_in_phoebus_config_policy() {
     assert!(
-        PhoebusObservedStatePolicy::from_cache_entry(Some(ObservedAlarmState::new(CachedState {
+        PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
             state: State::Ok,
             wake: None,
-        },)))
+        },))
         .suppresses_activation_duplicate()
     );
     assert!(PhoebusObservedStatePolicy::acknowledged().suppresses_activation_duplicate());
     assert!(
-        !PhoebusObservedStatePolicy::from_cache_entry(Some(ObservedAlarmState::new(
-            CachedState::bypassed(),
-        )))
-        .suppresses_activation_duplicate()
+        !PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState::bypassed(),))
+            .suppresses_activation_duplicate()
     );
     assert!(!PhoebusObservedStatePolicy::from_cache_entry(None).suppresses_activation_duplicate());
 }
@@ -196,20 +189,20 @@ fn should_define_controls_duplicate_policy_by_exact_cached_state() {
 
     let policy = ControlsObservedStatePolicy::from_status(
         &status,
-        Some(ObservedAlarmState::new(CachedState {
+        Some(CachedState {
             state: State::Bypassed,
             wake: wake.clone(),
-        })),
+        }),
     );
 
     assert!(policy.suppresses_duplicate());
     assert!(
         !ControlsObservedStatePolicy::from_status(
             &status,
-            Some(ObservedAlarmState::new(CachedState {
+            Some(CachedState {
                 state: State::Bypassed,
                 wake: None,
-            })),
+            }),
         )
         .suppresses_duplicate()
     );
@@ -227,17 +220,14 @@ fn should_define_controls_recorded_state_as_latest_incoming_observation() {
 
     let policy = ControlsObservedStatePolicy::from_status(
         &status,
-        Some(ObservedAlarmState::new(CachedState {
+        Some(CachedState {
             state: State::Ok,
             wake: None,
-        })),
+        }),
     );
 
     assert_eq!(policy.device(), "device");
-    assert_eq!(
-        policy.recorded_state(),
-        ObservedAlarmState::from_status(&status)
-    );
+    assert_eq!(policy.recorded_state(), CachedState::from_status(&status));
 }
 
 #[tokio::test]
@@ -253,10 +243,7 @@ async fn should_read_phoebus_observed_state_policy_from_latest_cache_entry() {
     let policy = read_phoebus_observed_state_policy(&cache, "device").await;
 
     assert!(policy.suppresses_bypass_duplicate(&CachedState::bypassed()));
-    assert_eq!(
-        policy.recorded_state(),
-        Some(ObservedAlarmState::new(CachedState::bypassed()))
-    );
+    assert_eq!(policy.recorded_state(), Some(CachedState::bypassed()));
 }
 
 #[tokio::test]
@@ -268,10 +255,10 @@ async fn should_record_phoebus_observed_state_from_policy_recorded_state() {
 
     assert_eq!(
         read_observed_alarm_state(&cache, "device").await,
-        Some(ObservedAlarmState::new(CachedState {
+        Some(CachedState {
             state: State::Acknowledged,
             wake: None,
-        }))
+        })
     );
 }
 

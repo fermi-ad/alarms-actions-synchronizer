@@ -182,7 +182,7 @@ impl Monitor {
             read_phoebus_observed_state_policy(&self.alarm_states, &key.device).await;
         let decision = match decide_phoebus_command(&msg_text, &observed_policy) {
             Ok(decision) => decision,
-            Err(error) => return log_parse_outcome("command", &key, &msg_text, error),
+            Err(_) => return log_parse_error("command", &key, &msg_text),
         };
 
         match decision {
@@ -228,7 +228,7 @@ impl Monitor {
         let cached_metadata = self.get_pv_metadata(&key).await;
         let decision = match decide_phoebus_config(&msg_text, &cached_metadata.config) {
             Ok(decision) => decision,
-            Err(error) => return log_parse_outcome("config", &key, &msg_text, error),
+            Err(_) => return log_parse_error("config", &key, &msg_text),
         };
 
         let outcome = match &decision {
@@ -328,11 +328,8 @@ fn decide_phoebus_command(
     msg_text: &str,
     observed_policy: &PhoebusObservedStatePolicy,
 ) -> Result<PhoebusCommandDecision, PhoebusParseError> {
-    let command_msg = serde_json::from_str::<Command>(msg_text).map_err(|e| {
-        PhoebusParseError::MalformedMessage {
-            cause: format!("{e}"),
-        }
-    })?;
+    let command_msg = serde_json::from_str::<Command>(msg_text)
+        .map_err(|_| PhoebusParseError::MalformedMessage)?;
 
     if command_msg.command != ACK_COMMAND {
         return Ok(PhoebusCommandDecision::IgnoreUnsupportedCommand);
@@ -381,7 +378,8 @@ fn decide_phoebus_config(
     msg_text: &str,
     cached_config: &Config,
 ) -> Result<PhoebusConfigDecision, PhoebusParseError> {
-    let config = Config::parse(msg_text)?;
+    let config = serde_json::from_str::<Config>(msg_text)
+        .map_err(|_| PhoebusParseError::MalformedMessage)?;
 
     if config == *cached_config {
         return Ok(PhoebusConfigDecision::DuplicateConfig { config });
@@ -391,7 +389,7 @@ fn decide_phoebus_config(
         return Ok(PhoebusConfigDecision::NoEnablementChange { config });
     }
 
-    let updated_state = config.as_cached_state();
+    let updated_state = config.as_cached_state()?;
     match updated_state.state {
         State::Bypassed => Ok(PhoebusConfigDecision::BypassOrSnooze {
             config,
@@ -401,28 +399,17 @@ fn decide_phoebus_config(
             config,
             updated_state,
         }),
-        _ => {
-            unreachable!("Config::parse should throw if the state does not resolve to Ok or Bypass")
-        }
+        _ => Err(PhoebusParseError::MalformedMessage),
     }
 }
 
 /// Logs the structured parse outcome for Phoebus message handling and maps it to the public synchronization outcome.
-fn log_parse_outcome(
-    operation: &str,
-    key: &Key,
-    msg_text: &str,
-    error: PhoebusParseError,
-) -> SyncOutcome {
-    match error {
-        PhoebusParseError::MalformedMessage { cause } => {
-            error!(
-                "Failed to deserialize Phoebus {operation}.\nCause: {cause}.\n Original message from Phoebus: {{ key: {key:?}, text: {msg_text} }}"
-            );
-            SyncOutcome::Skipped {
-                reason: SkipReason::MalformedMessage,
-            }
-        }
+fn log_parse_error(operation: &str, key: &Key, msg_text: &str) -> SyncOutcome {
+    error!(
+        "Failed to deserialize Phoebus {operation}.\n Original message from Phoebus: {{ key: {key:?}, text: {msg_text} }}"
+    );
+    SyncOutcome::Skipped {
+        reason: SkipReason::MalformedMessage,
     }
 }
 

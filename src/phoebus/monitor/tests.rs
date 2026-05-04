@@ -1,6 +1,5 @@
 use super::*;
 use crate::models::alarm::status::State;
-use crate::models::cache::ObservedAlarmState;
 use crate::models::outcomes::AttemptResult;
 use crate::models::phoebus::{Config, Key, Operation};
 use crate::models::{
@@ -190,12 +189,10 @@ fn should_decide_acknowledgement_command_as_controls_acknowledge() {
     assert_eq!(
         decide_phoebus_command(
             &serde_json::to_string(&command).unwrap(),
-            &PhoebusObservedStatePolicy::from_cache_entry(Some(ObservedAlarmState::new(
-                CachedState {
-                    state: State::Bypassed,
-                    wake: None,
-                },
-            ))),
+            &PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+                state: State::Bypassed,
+                wake: None,
+            },)),
         ),
         Ok(PhoebusCommandDecision::Acknowledge {
             user: String::from("test-user"),
@@ -247,14 +244,7 @@ fn should_map_malformed_phoebus_command_to_skipped_outcome() {
     };
 
     assert_eq!(
-        log_parse_outcome(
-            "command",
-            &key,
-            "{ malformed",
-            PhoebusParseError::MalformedMessage {
-                cause: String::new()
-            }
-        ),
+        log_parse_error("command", &key, "{ malformed"),
         SyncOutcome::Skipped {
             reason: SkipReason::MalformedMessage,
         }
@@ -270,14 +260,7 @@ fn should_map_malformed_phoebus_config_to_skipped_outcome() {
     };
 
     assert_eq!(
-        log_parse_outcome(
-            "config",
-            &key,
-            "{ malformed",
-            PhoebusParseError::MalformedMessage {
-                cause: String::new()
-            }
-        ),
+        log_parse_error("config", &key, "{ malformed"),
         SyncOutcome::Skipped {
             reason: SkipReason::MalformedMessage,
         }
@@ -323,13 +306,6 @@ fn should_treat_observed_acknowledged_state_as_duplicate_acknowledgement() {
         ),
         Ok(PhoebusCommandDecision::DuplicateAcknowledgement)
     );
-}
-
-#[test]
-fn should_treat_observed_bypass_state_as_duplicate_bypass_config() {
-    let updated_state = ObservedAlarmState::new(CachedState::bypassed()).into_cached_state();
-
-    assert!(ObservedAlarmState::new(CachedState::bypassed()).matches(&updated_state));
 }
 
 #[test]

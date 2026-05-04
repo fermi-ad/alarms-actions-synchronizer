@@ -88,7 +88,7 @@ impl Default for NormalizedEnablement {
 /// This is primarily a wire-facing tolerance type for the third-party Kafka contract. Its job is to accept
 /// the messy upstream JSON representations without forcing the rest of the application to reason directly
 /// about them.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     /// The enabled state of the alarm as it appears on the wire.
     ///
@@ -115,58 +115,33 @@ pub struct Config {
     /// They are modeled here so that updates to the `enabled` field do not erase other configuration settings.
     #[serde(flatten)]
     pub phoebus_specific: HashMap<String, Value>,
-
-    #[serde(skip)]
-    pub normalized_enablement: NormalizedEnablement,
 }
 impl Config {
-    pub fn parse(message_text: &str) -> Result<Self, PhoebusParseError> {
-        let mut parsed = match serde_json::from_str::<Config>(message_text) {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                return Err(PhoebusParseError::MalformedMessage {
-                    cause: format!("{e}"),
-                });
-            }
-        };
-        parsed.normalize_enablement()?;
-        Ok(parsed)
-    }
-
     /// Generates an instance of [`CachedState`] based on the normalized meaning of [`enabled`](Config::enabled).
-    pub fn as_cached_state(&self) -> CachedState {
-        self.normalized_enablement.as_cached_state()
+    pub fn as_cached_state(&self) -> Result<CachedState, PhoebusParseError> {
+        Ok(self.normalize_enablement()?.as_cached_state())
     }
 
     /// Normalizes the wire-facing [`Config::enabled`] field into a named domain concept.
     ///
     /// Returns [`Err(PhoebusParseError)`](PhoebusParseError) if the wire value could not be normalized into a supported enablement meaning.
-    fn normalize_enablement(&mut self) -> Result<(), PhoebusParseError> {
-        self.normalized_enablement = match self.enabled.as_deref() {
-            None => NormalizedEnablement::Bypassed,
+    fn normalize_enablement(&self) -> Result<NormalizedEnablement, PhoebusParseError> {
+        match self.enabled.as_deref() {
+            None => Ok(NormalizedEnablement::Bypassed),
             Some(value) => {
                 if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
-                    NormalizedEnablement::SnoozedUntil(dt)
+                    Ok(NormalizedEnablement::SnoozedUntil(dt))
                 } else if let Ok(is_active) = value.parse::<bool>() {
                     if is_active {
-                        NormalizedEnablement::Active
+                        Ok(NormalizedEnablement::Active)
                     } else {
-                        NormalizedEnablement::Bypassed
+                        Ok(NormalizedEnablement::Bypassed)
                     }
                 } else {
-                    return Err(PhoebusParseError::MalformedMessage { cause: "Could not normalize the enabled state of a Phoebus config message to an enablement meaning.".to_string()});
+                    Err(PhoebusParseError::MalformedMessage)
                 }
             }
-        };
-        Ok(())
-    }
-}
-impl PartialEq for Config {
-    fn eq(&self, other: &Self) -> bool {
-        self.enabled == other.enabled
-            && self.host == other.host
-            && self.user == other.user
-            && self.phoebus_specific == other.phoebus_specific
+        }
     }
 }
 
@@ -184,7 +159,7 @@ pub enum KeyParseError {
 /// Structured parse failure for Phoebus command or config decision-making.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhoebusParseError {
-    MalformedMessage { cause: String },
+    MalformedMessage,
 }
 
 /// This struct is a convenience for parsing the key of a Phoebus Kafka message.

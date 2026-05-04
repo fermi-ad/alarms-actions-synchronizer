@@ -131,7 +131,7 @@ async fn handle_config(
     key: Key,
     value: String,
 ) -> SyncOutcome {
-    let config = match Config::parse(&value) {
+    let config = match serde_json::from_str::<Config>(&value) {
         Ok(c) => c,
         Err(e) => {
             warn!(
@@ -143,7 +143,17 @@ async fn handle_config(
             };
         }
     };
-    let alarm_state = config.as_cached_state();
+    let alarm_state = match config.as_cached_state() {
+        Ok(c) => c,
+        Err(e) => {
+            error!(
+                "Failed parsing cache state from config message: {e:?}\n Tried parsing: {config:?}"
+            );
+            return SyncOutcome::Skipped {
+                reason: SkipReason::MalformedMessage,
+            };
+        }
+    };
     record_config_hydrated_state(state_cache, &key.device, alarm_state).await;
     metadata_scope
         .update_cached_metadata(

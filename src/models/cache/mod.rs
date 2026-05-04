@@ -48,6 +48,16 @@ impl CachedState {
             wake: None,
         }
     }
+
+    /// Creates a cached state value from a Controls [`Status`].
+    pub fn from_status(status: &Status) -> Self {
+        status.clone().into()
+    }
+
+    /// Returns whether this state matches the provided incoming state exactly for duplicate suppression.
+    pub fn matches(&self, incoming: &CachedState) -> bool {
+        self == incoming
+    }
 }
 
 impl Default for CachedState {
@@ -100,48 +110,20 @@ impl<Tz: TimeZone> From<DateTime<Tz>> for CachedState {
     }
 }
 
-/// Domain helper for duplicate suppression and latest-observed cache refresh semantics.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ObservedAlarmState {
-    pub(crate) state: CachedState,
-}
-
-impl ObservedAlarmState {
-    /// Creates an observed-state value from a [`CachedState`].
-    pub fn new(state: CachedState) -> Self {
-        Self { state }
-    }
-
-    /// Creates an observed-state value from a Controls [`Status`].
-    pub fn from_status(status: &Status) -> Self {
-        Self::new(status.clone().into())
-    }
-
-    /// Returns whether this observed state matches the provided incoming state exactly for duplicate suppression.
-    pub fn matches(&self, incoming: &CachedState) -> bool {
-        self.state == *incoming
-    }
-
-    /// Returns a clone of the cached-state representation used for storage.
-    pub fn into_cached_state(self) -> CachedState {
-        self.state
-    }
-}
-
 /// Tiny shared policy surface for Controls-originated inbound intent.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ControlsObservedStatePolicy {
     device: String,
-    incoming: ObservedAlarmState,
-    observed: Option<ObservedAlarmState>,
+    incoming: CachedState,
+    observed: Option<CachedState>,
 }
 
 impl ControlsObservedStatePolicy {
     /// Creates a policy for an incoming Controls alarm and the current observed-state cache entry, if any.
-    pub fn from_status(status: &Status, observed: Option<ObservedAlarmState>) -> Self {
+    pub fn from_status(status: &Status, observed: Option<CachedState>) -> Self {
         Self {
             device: status.device.clone(),
-            incoming: ObservedAlarmState::from_status(status),
+            incoming: CachedState::from_status(status),
             observed,
         }
     }
@@ -155,7 +137,7 @@ impl ControlsObservedStatePolicy {
     pub fn suppresses_duplicate(&self) -> bool {
         self.observed
             .as_ref()
-            .is_some_and(|observed| observed.matches(&self.incoming.state))
+            .is_some_and(|observed| observed.matches(&self.incoming))
     }
 
     /// Returns the latest-observed state that should be recorded after processing this Controls update.
@@ -163,7 +145,7 @@ impl ControlsObservedStatePolicy {
     /// Controls preserves the current latest-observed incoming state locally for duplicate suppression and loop
     /// prevention, including after local-only handling and after attempted outbound sync regardless of transport
     /// result.
-    pub fn recorded_state(&self) -> ObservedAlarmState {
+    pub fn recorded_state(&self) -> CachedState {
         self.incoming.clone()
     }
 }
@@ -171,33 +153,33 @@ impl ControlsObservedStatePolicy {
 /// Tiny shared policy surface for Phoebus-originated inbound intent.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhoebusObservedStatePolicy {
-    observed: Option<ObservedAlarmState>,
+    observed: Option<CachedState>,
 }
 
 impl PhoebusObservedStatePolicy {
     /// Creates a policy for the current observed-state cache entry, if any.
-    pub fn from_cache_entry(observed: Option<ObservedAlarmState>) -> Self {
+    pub fn from_cache_entry(observed: Option<CachedState>) -> Self {
         Self { observed }
     }
 
     /// Returns the shared policy representing an acknowledgement command accepted from Phoebus.
     pub fn acknowledged() -> Self {
-        Self::from_cache_entry(Some(ObservedAlarmState::new(CachedState {
+        Self::from_cache_entry(Some(CachedState {
             state: State::Acknowledged,
             wake: None,
-        })))
+        }))
     }
 
     /// Returns the shared policy representing a Phoebus config update whose latest observed state should be stored.
     pub fn for_config_record(updated_state: CachedState) -> Self {
-        Self::from_cache_entry(Some(ObservedAlarmState::new(updated_state)))
+        Self::from_cache_entry(Some(updated_state))
     }
 
     /// Returns whether the current observed cache entry suppresses a repeated acknowledgement command.
     pub fn suppresses_acknowledgement_duplicate(&self) -> bool {
         self.observed
             .as_ref()
-            .is_some_and(|observed| observed.state.state == State::Acknowledged)
+            .is_some_and(|observed| observed.state == State::Acknowledged)
     }
 
     /// Returns whether the current observed cache entry suppresses a repeated bypass/snooze config intent.
@@ -212,12 +194,12 @@ impl PhoebusObservedStatePolicy {
     pub fn suppresses_activation_duplicate(&self) -> bool {
         self.observed
             .as_ref()
-            .is_some_and(|observed| observed.state.state != State::Bypassed)
+            .is_some_and(|observed| observed.state != State::Bypassed)
     }
 
     /// Returns the latest-observed state that should be recorded after accepting this Phoebus-side intent,
     /// or `None` if this policy has no recordable state.
-    pub fn recorded_state(&self) -> Option<ObservedAlarmState> {
+    pub fn recorded_state(&self) -> Option<CachedState> {
         self.observed.clone()
     }
 }
@@ -226,13 +208,8 @@ impl PhoebusObservedStatePolicy {
 pub async fn read_observed_alarm_state(
     cache: &AlarmStateCache,
     device: &str,
-) -> Option<ObservedAlarmState> {
-    cache
-        .read()
-        .await
-        .get(device)
-        .cloned()
-        .map(ObservedAlarmState::new)
+) -> Option<CachedState> {
+    cache.read().await.get(device).cloned()
 }
 
 /// Creates the shared Controls observed-state policy for an incoming alarm.
@@ -258,12 +235,12 @@ pub async fn read_phoebus_observed_state_policy(
 pub async fn record_observed_alarm_state(
     cache: &AlarmStateCache,
     device: &str,
-    observed_state: ObservedAlarmState,
+    observed_state: CachedState,
 ) {
     cache
         .write()
         .await
-        .insert(device.to_owned(), observed_state.into_cached_state());
+        .insert(device.to_owned(), observed_state);
 }
 
 /// Records a startup-hydrated alarm state derived from a Phoebus config record.
