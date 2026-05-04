@@ -139,7 +139,6 @@ impl ConnectionManager {
     async fn publish_client(&self, client: AlarmCommandsClient<Channel>, generation: u64) {
         let mut lock = self.connection.write().await;
         *lock = Some(SharedConnectionState { client, generation });
-        drop(lock);
 
         debug!(
             generation = generation,

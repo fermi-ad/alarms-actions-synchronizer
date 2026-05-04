@@ -242,7 +242,7 @@ fn should_map_malformed_phoebus_config_to_skipped_outcome() {
 }
 
 #[test]
-fn should_map_unsupported_monitor_key_to_noise_ignored_outcome() {
+fn should_map_untracked_monitor_key_to_noise_ignored_outcome() {
     assert_eq!(
         log_monitor_key_parse_outcome(
             "state:display/device",
@@ -250,7 +250,7 @@ fn should_map_unsupported_monitor_key_to_noise_ignored_outcome() {
             &KeyParseError::UnsupportedOperation,
         ),
         SyncOutcome::Ignored {
-            reason: IgnoreReason::PhoebusNoise,
+            reason: IgnoreReason::StateNoise,
         }
     );
 }

@@ -113,7 +113,7 @@ async fn populate_caches(
                 message.value()
             );
             SyncOutcome::Ignored {
-                reason: IgnoreReason::PhoebusNoise,
+                reason: IgnoreReason::StateNoise,
             }
         };
         debug!("Startup hydration outcome: {outcome:?}");
@@ -139,7 +139,7 @@ async fn handle_config(
                 value
             );
             return SyncOutcome::Ignored {
-                reason: IgnoreReason::PhoebusNoise,
+                reason: IgnoreReason::StateNoise,
             };
         }
     };
@@ -207,7 +207,7 @@ async fn handle_state(state_cache: &AlarmStateCache, key: Key, value: String) ->
         None => {
             debug!("Could not match any fields from {value}.");
             SyncOutcome::Ignored {
-                reason: IgnoreReason::PhoebusNoise,
+                reason: IgnoreReason::StateNoise,
             }
         }
     }
@@ -217,10 +217,10 @@ fn log_startup_key_parse_outcome(key: &str, value: &str, error: &KeyParseError) 
     match error {
         KeyParseError::UnsupportedOperation => {
             debug!(
-                "Ignoring Phoebus message during startup hydration because its key uses an unsupported operation prefix.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
+                "Ignoring Phoebus message during startup hydration because its key uses an untracked operation prefix.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
             );
             SyncOutcome::Ignored {
-                reason: IgnoreReason::PhoebusNoise,
+                reason: IgnoreReason::StateNoise,
             }
         }
         KeyParseError::MalformedStructure => {

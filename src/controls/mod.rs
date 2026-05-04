@@ -86,7 +86,7 @@ impl<P: Publisher> SyncImpl<P> {
         )
         .await;
         SyncOutcome::Ignored {
-            reason: IgnoreReason::UnsupportedOperation,
+            reason: IgnoreReason::StateNoise,
         }
     }
 

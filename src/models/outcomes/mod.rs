@@ -45,10 +45,8 @@ pub enum SyncDirection {
 pub enum IgnoreReason {
     /// The device belongs to a non-EPICS source and is outside this synchronizer's mission.
     ExternalSource,
-    /// The message class is part of Phoebus traffic but does not express user intent this service mirrors.
-    UnsupportedOperation,
-    /// A Phoebus message class was recognized as server-state or otherwise irrelevant noise.
-    PhoebusNoise,
+    /// The message represents state change that is not tracked by this service.
+    StateNoise,
 }
 
 /// Why a synchronization-relevant action was skipped.

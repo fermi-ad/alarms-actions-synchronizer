@@ -118,9 +118,7 @@ impl Monitor {
         let policy = read_phoebus_observed_state_policy(&self.alarm_states, device).await;
         if policy.suppresses_activation_duplicate() {
             handle_already_active(device);
-            return SyncOutcome::Ignored {
-                reason: IgnoreReason::UnsupportedOperation,
-            };
+            return SyncOutcome::Duplicate;
         }
 
         warn!(
@@ -178,7 +176,7 @@ impl Monitor {
                     "Received Phoebus command that does not need to be processed. Doing nothing.\n Original message from Phoebus: {{ key: {key:?}, text: {msg_text} }}"
                 );
                 SyncOutcome::Ignored {
-                    reason: IgnoreReason::UnsupportedOperation,
+                    reason: IgnoreReason::StateNoise,
                 }
             }
             PhoebusCommandDecision::DuplicateAcknowledgement => {
@@ -230,7 +228,7 @@ impl Monitor {
                 SyncOutcome::Duplicate
             }
             PhoebusConfigDecisionFlag::NoEnablementChange => SyncOutcome::Ignored {
-                reason: IgnoreReason::UnsupportedOperation,
+                reason: IgnoreReason::StateNoise,
             },
             PhoebusConfigDecisionFlag::BypassOrSnooze { updated_state } => {
                 self.handle_bypassed_alarm(
@@ -409,7 +407,7 @@ fn process_other(key: Key, msg_text: String) -> SyncOutcome {
         "Received Phoebus message that is not a config or a command. Treating it as non-sync Phoebus noise and doing nothing.\n Original message from Phoebus: {{ key: {key:?}, text: {msg_text} }}"
     );
     SyncOutcome::Ignored {
-        reason: IgnoreReason::PhoebusNoise,
+        reason: IgnoreReason::StateNoise,
     }
 }
 
@@ -417,10 +415,10 @@ fn log_monitor_key_parse_outcome(key: &str, value: &str, error: &KeyParseError) 
     match error {
         KeyParseError::UnsupportedOperation => {
             debug!(
-                "Ignoring Phoebus runtime message because its key uses an unsupported operation prefix.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
+                "Ignoring Phoebus runtime message because its key uses an untracked operation prefix.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
             );
             SyncOutcome::Ignored {
-                reason: IgnoreReason::PhoebusNoise,
+                reason: IgnoreReason::StateNoise,
             }
         }
         KeyParseError::MalformedStructure => {
