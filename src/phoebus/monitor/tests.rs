@@ -76,8 +76,9 @@ fn should_decide_duplicate_phoebus_config() {
 
     assert_eq!(
         decide_phoebus_config(&serde_json::to_string(&config).unwrap(), &config),
-        Ok(PhoebusConfigDecision::DuplicateConfig {
-            config: config.clone(),
+        Ok(PhoebusConfigDecision {
+            decision_flag: PhoebusConfigDecisionFlag::DuplicateConfig,
+            config
         })
     );
 }
@@ -100,7 +101,8 @@ fn should_decide_config_with_same_enablement_as_metadata_only_update() {
             &serde_json::to_string(&incoming_config).unwrap(),
             &cached_config,
         ),
-        Ok(PhoebusConfigDecision::NoEnablementChange {
+        Ok(PhoebusConfigDecision {
+            decision_flag: PhoebusConfigDecisionFlag::NoEnablementChange,
             config: incoming_config,
         })
     );
@@ -123,12 +125,14 @@ fn should_decide_bypassed_phoebus_config_as_controls_bypass_or_snooze() {
             &serde_json::to_string(&incoming_config).unwrap(),
             &cached_config,
         ),
-        Ok(PhoebusConfigDecision::BypassOrSnooze {
-            config: incoming_config,
-            updated_state: CachedState {
-                state: State::Bypassed,
-                wake: None,
+        Ok(PhoebusConfigDecision {
+            decision_flag: PhoebusConfigDecisionFlag::BypassOrSnooze {
+                updated_state: CachedState {
+                    state: State::Bypassed,
+                    wake: None,
+                }
             },
+            config: incoming_config,
         })
     );
 }
@@ -150,12 +154,14 @@ fn should_decide_active_phoebus_config_as_local_only_recording() {
             &serde_json::to_string(&incoming_config).unwrap(),
             &cached_config,
         ),
-        Ok(PhoebusConfigDecision::RecordActiveLocally {
-            config: incoming_config,
-            updated_state: CachedState {
-                state: State::Ok,
-                wake: None,
+        Ok(PhoebusConfigDecision {
+            decision_flag: PhoebusConfigDecisionFlag::RecordActiveLocally {
+                updated_state: CachedState {
+                    state: State::Ok,
+                    wake: None,
+                }
             },
+            config: incoming_config,
         })
     );
 }
@@ -200,41 +206,6 @@ fn should_decide_acknowledgement_command_as_controls_acknowledge() {
         Ok(PhoebusCommandDecision::Acknowledge {
             user: String::from("test-user"),
         })
-    );
-}
-
-#[test]
-fn should_extract_config_from_duplicate_config_decision() {
-    let config = Config {
-        enabled: Some(String::from("false")),
-        user: String::from("test-user"),
-        ..Config::default()
-    };
-
-    assert_eq!(
-        PhoebusConfigDecision::DuplicateConfig {
-            config: config.clone(),
-        }
-        .into_config(),
-        config
-    );
-}
-
-#[test]
-fn should_extract_config_from_bypass_decision() {
-    let config = Config {
-        enabled: Some(String::from("false")),
-        user: String::from("test-user"),
-        ..Config::default()
-    };
-
-    assert_eq!(
-        PhoebusConfigDecision::BypassOrSnooze {
-            config: config.clone(),
-            updated_state: CachedState::bypassed(),
-        }
-        .into_config(),
-        config
     );
 }
 

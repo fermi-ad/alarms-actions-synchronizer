@@ -10,7 +10,7 @@ use crate::models::outcomes::AttemptResult;
 use crate::models::phoebus::{Command, Config, Operation, PvMetadata};
 use crate::models::{
     ACK_COMMAND, CachedState, SkipReason, SyncDirection, SyncOutcome,
-    read_controls_observed_state_policy, record_controls_observed_state,
+    read_controls_observed_state_policy, record_observed_alarm_state,
 };
 use crate::utils::test_runner::{MessageOrigin, TestRunner};
 
@@ -381,7 +381,7 @@ async fn should_record_controls_policy_latest_incoming_state_for_local_only_path
     );
 
     let policy = read_controls_observed_state_policy(&sync.alarm_states, &status).await;
-    record_controls_observed_state(&sync.alarm_states, &policy).await;
+    record_observed_alarm_state(&sync.alarm_states, policy.device(), policy.recorded_state()).await;
 
     assert_eq!(
         sync.alarm_states.read().await.get(&status.device).cloned(),

@@ -18,7 +18,7 @@ use crate::models::phoebus::{Operation, PvMetadata};
 use crate::models::{
     AlarmStateCache, ControlsObservedStatePolicy, IgnoreReason, OutboundSyncResult,
     RuntimeSyncFactory, SyncDirection, SyncOutcome, Synchronizer, SynchronizerConfig,
-    read_controls_observed_state_policy, record_controls_observed_state,
+    read_controls_observed_state_policy, record_observed_alarm_state,
 };
 use crate::utils::get_command_topic;
 use rust_pubsub_lib::{Message, PubSubError, Publisher, Snapshot, StringMessage, Subscriber};
@@ -79,7 +79,12 @@ impl<P: Publisher> SyncImpl<P> {
             controls_alarm.device,
             controls_alarm.state()
         );
-        record_controls_observed_state(&self.alarm_states, observed_state_policy).await;
+        record_observed_alarm_state(
+            &self.alarm_states,
+            observed_state_policy.device(),
+            observed_state_policy.recorded_state(),
+        )
+        .await;
         SyncOutcome::Ignored {
             reason: IgnoreReason::UnsupportedOperation,
         }
@@ -189,7 +194,12 @@ impl<P: Publisher> SyncImpl<P> {
                     "Refreshing latest observed Controls state for device {} after outbound result {:?} to preserve duplicate suppression and loop prevention.",
                     controls_alarm.device, outbound_result
                 );
-                record_controls_observed_state(&self.alarm_states, observed_state_policy).await;
+                record_observed_alarm_state(
+                    &self.alarm_states,
+                    observed_state_policy.device(),
+                    observed_state_policy.recorded_state(),
+                )
+                .await;
 
                 outbound_result.into_sync_outcome(SyncDirection::ControlsToPhoebus)
             }
@@ -212,7 +222,12 @@ impl<P: Publisher> SyncImpl<P> {
                 "Received ACNET device {}. Recording latest observed state for loop prevention and doing nothing.",
                 controls_alarm.device
             );
-            record_controls_observed_state(&self.alarm_states, &observed_state_policy).await;
+            record_observed_alarm_state(
+                &self.alarm_states,
+                observed_state_policy.device(),
+                observed_state_policy.recorded_state(),
+            )
+            .await;
             SyncOutcome::Ignored {
                 reason: IgnoreReason::ExternalSource,
             }

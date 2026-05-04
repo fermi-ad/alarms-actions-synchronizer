@@ -47,11 +47,12 @@ pub struct Command {
 /// [`Config`] is a wire-facing tolerance type that preserves the original JSON shape closely enough to
 /// deserialize third-party payloads and round-trip unrelated Phoebus-specific fields. This enum captures
 /// the meaning that the rest of the synchronizer actually cares about after normalization.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum NormalizedEnablement {
     /// The alarm is active/enabled now.
     Active,
     /// The alarm is bypassed indefinitely.
+    #[default]
     Bypassed,
     /// The alarm is snoozed until the provided RFC3339 time.
     SnoozedUntil(DateTime<chrono::FixedOffset>),
@@ -73,11 +74,6 @@ impl NormalizedEnablement {
             Self::Bypassed => Some(false.to_string()),
             Self::SnoozedUntil(dt) => Some(dt.to_rfc3339()),
         }
-    }
-}
-impl Default for NormalizedEnablement {
-    fn default() -> Self {
-        Self::Bypassed
     }
 }
 

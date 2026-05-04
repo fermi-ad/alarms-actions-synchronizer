@@ -162,11 +162,6 @@ impl PhoebusObservedStatePolicy {
         Self { observed }
     }
 
-    /// Returns the shared policy representing a Phoebus config update whose latest observed state should be stored.
-    pub fn for_config_record(updated_state: CachedState) -> Self {
-        Self::from_cache_entry(Some(updated_state))
-    }
-
     /// Returns whether the current observed cache entry suppresses a repeated acknowledgement command.
     pub fn suppresses_acknowledgement_duplicate(&self) -> bool {
         self.observed
@@ -187,12 +182,6 @@ impl PhoebusObservedStatePolicy {
         self.observed
             .as_ref()
             .is_some_and(|observed| observed.state != State::Bypassed)
-    }
-
-    /// Returns the latest-observed state that should be recorded after accepting this Phoebus-side intent,
-    /// or `None` if this policy has no recordable state.
-    pub fn recorded_state(&self) -> Option<CachedState> {
-        self.observed.clone()
     }
 }
 
@@ -270,23 +259,4 @@ pub async fn record_startup_state_evidence(
         return;
     }
     writer.insert(device.to_owned(), state);
-}
-
-/// Records the latest observed Controls state according to the shared Controls policy surface.
-pub async fn record_controls_observed_state(
-    cache: &AlarmStateCache,
-    policy: &ControlsObservedStatePolicy,
-) {
-    record_observed_alarm_state(cache, policy.device(), policy.recorded_state()).await;
-}
-
-/// Records the latest observed Phoebus state according to the shared Phoebus policy surface.
-pub async fn record_phoebus_observed_state(
-    cache: &AlarmStateCache,
-    device: &str,
-    policy: &PhoebusObservedStatePolicy,
-) {
-    if let Some(state) = policy.recorded_state() {
-        record_observed_alarm_state(cache, device, state).await;
-    }
 }

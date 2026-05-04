@@ -23,7 +23,7 @@ use crate::models::phoebus::{
 use crate::models::{
     ACK_COMMAND, AlarmStateCache, CachedState, IgnoreReason, PhoebusObservedStatePolicy,
     SkipReason, SyncDirection, SyncOutcome, SynchronizerConfig, read_phoebus_observed_state_policy,
-    record_phoebus_observed_state,
+    record_observed_alarm_state,
 };
 use crate::phoebus::sync::ControlsClient;
 use rust_pubsub_lib::{Message, PubSubError, StringMessage, Subscriber};
@@ -127,12 +127,7 @@ impl Monitor {
             "Observed Phoebus config re-activate device '{}', but the synchronizer cannot mirror active/OK state back to Controls yet because the shared interfaces repository does not expose the required upstream API. Refreshing local observed cache only until that capability exists.",
             device
         );
-        record_phoebus_observed_state(
-            &self.alarm_states,
-            device,
-            &PhoebusObservedStatePolicy::for_config_record(updated_state),
-        )
-        .await;
+        record_observed_alarm_state(&self.alarm_states, device, updated_state).await;
         SyncOutcome::Skipped {
             reason: SkipReason::UnsupportedCapability,
         }
@@ -163,12 +158,7 @@ impl Monitor {
             "Refreshing latest observed Phoebus bypass state for device {} after outbound result {:?} to preserve duplicate suppression and loop prevention.",
             device, outbound_result
         );
-        record_phoebus_observed_state(
-            &self.alarm_states,
-            device,
-            &PhoebusObservedStatePolicy::for_config_record(updated_state),
-        )
-        .await;
+        record_observed_alarm_state(&self.alarm_states, device, updated_state).await;
 
         outbound_result.into_sync_outcome(SyncDirection::PhoebusToControls)
     }
@@ -208,13 +198,13 @@ impl Monitor {
                     "Refreshing latest observed Phoebus acknowledgement state for device {} after outbound result {:?} to preserve duplicate suppression and loop prevention.",
                     key.device, outbound_result
                 );
-                record_phoebus_observed_state(
+                record_observed_alarm_state(
                     &self.alarm_states,
                     &key.device,
-                    &PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+                    CachedState {
                         state: State::Acknowledged,
                         wake: None,
-                    })),
+                    },
                 )
                 .await;
 
@@ -231,32 +221,33 @@ impl Monitor {
             Err(_) => return log_parse_error("config", &key, &msg_text),
         };
 
-        let outcome = match &decision {
-            PhoebusConfigDecision::DuplicateConfig { .. } => {
+        let outcome = match &decision.decision_flag {
+            PhoebusConfigDecisionFlag::DuplicateConfig => {
                 info!(
                     "Received config from Phoebus for device '{}' that matches the cached config. Doing nothing.",
                     key.device
                 );
                 SyncOutcome::Duplicate
             }
-            PhoebusConfigDecision::NoEnablementChange { .. } => SyncOutcome::Ignored {
+            PhoebusConfigDecisionFlag::NoEnablementChange => SyncOutcome::Ignored {
                 reason: IgnoreReason::UnsupportedOperation,
             },
-            PhoebusConfigDecision::BypassOrSnooze {
-                config,
-                updated_state,
-            } => {
-                self.handle_bypassed_alarm(&key.device, updated_state.clone(), &config.user)
-                    .await
+            PhoebusConfigDecisionFlag::BypassOrSnooze { updated_state } => {
+                self.handle_bypassed_alarm(
+                    &key.device,
+                    updated_state.clone(),
+                    &decision.config.user,
+                )
+                .await
             }
-            PhoebusConfigDecision::RecordActiveLocally { updated_state, .. } => {
+            PhoebusConfigDecisionFlag::RecordActiveLocally { updated_state } => {
                 self.record_active_alarm_local_only(&key.device, updated_state.clone())
                     .await
             }
         };
 
         let new_metadata = PvMetadata {
-            config: decision.into_config(),
+            config: decision.config,
             ..cached_metadata
         };
         self.metadata_scope
@@ -344,33 +335,19 @@ fn decide_phoebus_command(
     })
 }
 
+#[derive(Debug, PartialEq)]
+enum PhoebusConfigDecisionFlag {
+    DuplicateConfig,
+    NoEnablementChange,
+    BypassOrSnooze { updated_state: CachedState },
+    RecordActiveLocally { updated_state: CachedState },
+}
+
 /// Structured decision for how an inbound Phoebus config should be handled before side effects occur.
 #[derive(Debug, PartialEq)]
-enum PhoebusConfigDecision {
-    DuplicateConfig {
-        config: Config,
-    },
-    NoEnablementChange {
-        config: Config,
-    },
-    BypassOrSnooze {
-        config: Config,
-        updated_state: CachedState,
-    },
-    RecordActiveLocally {
-        config: Config,
-        updated_state: CachedState,
-    },
-}
-impl PhoebusConfigDecision {
-    fn into_config(self) -> Config {
-        match self {
-            Self::DuplicateConfig { config }
-            | Self::NoEnablementChange { config }
-            | Self::BypassOrSnooze { config, .. }
-            | Self::RecordActiveLocally { config, .. } => config,
-        }
-    }
+struct PhoebusConfigDecision {
+    decision_flag: PhoebusConfigDecisionFlag,
+    config: Config,
 }
 
 /// Decides how an inbound Phoebus config should be handled before transport or cache side effects occur.
@@ -382,22 +359,28 @@ fn decide_phoebus_config(
         .map_err(|_| PhoebusParseError::MalformedMessage)?;
 
     if config == *cached_config {
-        return Ok(PhoebusConfigDecision::DuplicateConfig { config });
+        return Ok(PhoebusConfigDecision {
+            decision_flag: PhoebusConfigDecisionFlag::DuplicateConfig,
+            config,
+        });
     }
 
     if config.enabled == cached_config.enabled {
-        return Ok(PhoebusConfigDecision::NoEnablementChange { config });
+        return Ok(PhoebusConfigDecision {
+            decision_flag: PhoebusConfigDecisionFlag::NoEnablementChange,
+            config,
+        });
     }
 
     let updated_state = config.as_cached_state()?;
     match updated_state.state {
-        State::Bypassed => Ok(PhoebusConfigDecision::BypassOrSnooze {
+        State::Bypassed => Ok(PhoebusConfigDecision {
+            decision_flag: PhoebusConfigDecisionFlag::BypassOrSnooze { updated_state },
             config,
-            updated_state,
         }),
-        State::Ok => Ok(PhoebusConfigDecision::RecordActiveLocally {
+        State::Ok => Ok(PhoebusConfigDecision {
+            decision_flag: PhoebusConfigDecisionFlag::RecordActiveLocally { updated_state },
             config,
-            updated_state,
         }),
         _ => Err(PhoebusParseError::MalformedMessage),
     }

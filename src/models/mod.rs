@@ -47,8 +47,7 @@ pub use google::protobuf as generated;
 pub use cache::{
     AlarmStateCache, CachedState, ControlsObservedStatePolicy, PhoebusObservedStatePolicy,
     read_controls_observed_state_policy, read_phoebus_observed_state_policy,
-    record_controls_observed_state, record_phoebus_observed_state, record_startup_config_state,
-    record_startup_state_evidence,
+    record_observed_alarm_state, record_startup_config_state, record_startup_state_evidence,
 };
 
 pub use config::{

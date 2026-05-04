@@ -62,13 +62,6 @@ fn should_build_acknowledged_observed_state_for_command_policy() {
         wake: None,
     }));
     assert!(policy.suppresses_acknowledgement_duplicate());
-    assert_eq!(
-        policy.recorded_state(),
-        Some(CachedState {
-            state: State::Acknowledged,
-            wake: None,
-        })
-    );
 }
 
 #[test]
@@ -118,30 +111,6 @@ fn should_define_phoebus_acknowledgement_policy_duplicate_and_recorded_state() {
     let policy = PhoebusObservedStatePolicy::from_cache_entry(cached_entry);
 
     assert!(policy.suppresses_acknowledgement_duplicate());
-    assert_eq!(
-        policy.recorded_state(),
-        Some(CachedState {
-            state: State::Acknowledged,
-            wake: None,
-        })
-    );
-}
-
-#[test]
-fn should_build_phoebus_config_record_observed_state() {
-    let wake = Some(Timestamp {
-        seconds: 555,
-        nanos: 1,
-    });
-    let updated_state = CachedState {
-        state: State::Bypassed,
-        wake: wake.clone(),
-    };
-
-    assert_eq!(
-        PhoebusObservedStatePolicy::for_config_record(updated_state.clone()).recorded_state(),
-        Some(updated_state)
-    );
 }
 
 #[test]
@@ -258,18 +227,21 @@ async fn should_read_phoebus_observed_state_policy_from_latest_cache_entry() {
     let policy = read_phoebus_observed_state_policy(&cache, "device").await;
 
     assert!(policy.suppresses_bypass_duplicate(&CachedState::bypassed()));
-    assert_eq!(policy.recorded_state(), Some(CachedState::bypassed()));
 }
 
 #[tokio::test]
 async fn should_record_phoebus_observed_state_from_policy_recorded_state() {
     let cache = Arc::new(RwLock::new(HashMap::new()));
-    let policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
-        state: State::Acknowledged,
-        wake: None,
-    }));
 
-    record_phoebus_observed_state(&cache, "device", &policy).await;
+    record_observed_alarm_state(
+        &cache,
+        "device",
+        CachedState {
+            state: State::Acknowledged,
+            wake: None,
+        },
+    )
+    .await;
 
     assert_eq!(
         read_observed_alarm_state(&cache, "device").await,
