@@ -145,7 +145,8 @@ pub async fn read_observed_state_policy(
     ObservedStatePolicy::new(observed)
 }
 
-/// Records the latest observed alarm state for `device`.
+/// Records the latest observed alarm state for `device`. This is intended to capture the latest
+/// observed state for the device, regardless of whether it was successfully mirrored to the opposite service.
 pub async fn record_alarm_state(cache: &AlarmStateCache, device: &str, state: CachedState) {
     cache.write().await.insert(device.to_owned(), state);
 }
@@ -186,8 +187,5 @@ fn observed_suppresses_incoming(observed: &CachedState, incoming: &CachedState) 
 /// or the device was explicitly unbypassed.
 fn is_transition_forbidden(observed: &CachedState, incoming: &CachedState) -> bool {
     observed.state == State::Bypassed
-        && match incoming.state {
-            State::Bypassed | State::Unbypassed => false,
-            _ => true,
-        }
+        && !matches!(incoming.state, State::Bypassed | State::Unbypassed)
 }
