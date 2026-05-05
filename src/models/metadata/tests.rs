@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::*;
 use crate::models::phoebus::Key;
 
@@ -15,7 +17,7 @@ async fn lookup_metadata_by_device_returns_metadata_when_present() {
     let scope = MetadataScope::new();
 
     let metadata = PvMetadata {
-        config: Config::default(),
+        phoebus_config_metadata: HashMap::new(),
         display_path: "/path/to/alarm".to_string(),
         phoebus_topic: "test-topic".to_string(),
     };
@@ -47,7 +49,7 @@ async fn update_cached_metadata_stores_new_metadata() {
     let scope = MetadataScope::new();
 
     let metadata = PvMetadata {
-        config: Config::default(),
+        phoebus_config_metadata: HashMap::new(),
         display_path: "/path".to_string(),
         phoebus_topic: "topic".to_string(),
     };
@@ -65,7 +67,7 @@ async fn update_cached_metadata_overwrites_existing_metadata() {
     let scope = MetadataScope::new();
 
     let old_metadata = PvMetadata {
-        config: Config::default(),
+        phoebus_config_metadata: HashMap::new(),
         display_path: "/old/path".to_string(),
         phoebus_topic: "old-topic".to_string(),
     };
@@ -74,7 +76,7 @@ async fn update_cached_metadata_overwrites_existing_metadata() {
         .await;
 
     let new_metadata = PvMetadata {
-        config: Config::default(),
+        phoebus_config_metadata: HashMap::new(),
         display_path: "/new/path".to_string(),
         phoebus_topic: "new-topic".to_string(),
     };

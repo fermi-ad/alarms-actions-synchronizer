@@ -16,7 +16,7 @@ use crate::models::{
     alarm::status::State,
     metadata::MetadataScope,
     phoebus::{Config, Key, KeyParseError, Operation, PvMetadata},
-    record_startup_config_state, record_startup_state_evidence,
+    record_alarm_state, record_startup_state_evidence,
 };
 use rust_pubsub_lib::{Message, Snapshot, StringMessage};
 use serde_json::Value;
@@ -121,7 +121,7 @@ async fn populate_caches(
 }
 
 /// Attempts to convert the provided `value` into an instance of [`Config`], then updates the device's
-/// value in [`AlarmStateCache`] and [`PvCache`].
+/// value in [`AlarmStateCache`] and [`MetadataScope`].
 ///
 /// Config records are the discovery path for bringing devices into scope and the primary source for bypass/snooze semantics.
 async fn handle_config(
@@ -154,12 +154,12 @@ async fn handle_config(
             };
         }
     };
-    record_startup_config_state(state_cache, &key.device, alarm_state).await;
+    record_alarm_state(state_cache, &key.device, alarm_state).await;
     metadata_scope
         .update_cached_metadata(
             &key.device,
             PvMetadata {
-                config,
+                phoebus_config_metadata: config.phoebus_specific,
                 display_path: key.display_path,
                 phoebus_topic: topic.to_string(),
             },
@@ -213,6 +213,7 @@ async fn handle_state(state_cache: &AlarmStateCache, key: Key, value: String) ->
     }
 }
 
+/// Logs the structured parse outcome for a startup hydration key and maps it to the public synchronization outcome.
 fn log_startup_key_parse_outcome(key: &str, value: &str, error: &KeyParseError) -> SyncOutcome {
     match error {
         KeyParseError::UnsupportedOperation => {

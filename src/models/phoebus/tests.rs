@@ -133,10 +133,12 @@ fn should_reject_malformed_or_unsupported_keys() {
 
 #[test]
 fn should_get_cached_state_from_config() {
+    // A missing/null enabled field normalizes to Bypassed.
     let config = Config::default();
     let result = config.as_cached_state();
     assert_eq!(Ok(CachedState::bypassed()), result);
 
+    // An explicit `true` enabled field normalizes to Unbypassed (active).
     let config = Config {
         enabled: Some(true.to_string()),
         ..Config::default()
@@ -144,12 +146,13 @@ fn should_get_cached_state_from_config() {
     let result = config.as_cached_state();
     assert_eq!(
         Ok(CachedState {
-            state: State::Ok,
+            state: State::Unbypassed,
             wake: None
         }),
         result
     );
 
+    // A corrupted enabled field returns a parse error.
     let config = Config {
         enabled: Some("Corrupted data".to_owned()),
         ..Config::default()
@@ -157,6 +160,7 @@ fn should_get_cached_state_from_config() {
     let result = config.as_cached_state();
     assert_eq!(Err(PhoebusParseError::MalformedMessage), result);
 
+    // A past RFC3339 timestamp normalizes to Unbypassed (the snooze has expired).
     let config = Config {
         enabled: Some("2000-01-01T00:00:00.000Z".to_owned()),
         ..Config::default()
@@ -164,7 +168,7 @@ fn should_get_cached_state_from_config() {
     let result = config.as_cached_state();
     assert_eq!(
         Ok(CachedState {
-            state: State::Ok,
+            state: State::Unbypassed,
             wake: None
         }),
         result

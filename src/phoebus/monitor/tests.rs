@@ -1,18 +1,19 @@
 use super::*;
 use crate::models::alarm::status::State;
 use crate::models::outcomes::AttemptResult;
-use crate::models::phoebus::{Config, Key, Operation};
+use crate::models::phoebus::{Config, Key, Operation, PvMetadata};
 use crate::models::{
-    ACK_COMMAND, CachedState, IgnoreReason, OutboundSyncResult, PhoebusObservedStatePolicy,
-    SkipReason, SyncDirection, SyncOutcome,
+    ACK_COMMAND, CachedState, IgnoreReason, ObservedStatePolicy, OutboundSyncResult, SkipReason,
+    SyncDirection, SyncOutcome,
 };
+use std::collections::HashMap;
 
 #[test]
 fn should_decide_malformed_phoebus_command_as_skipped_parse_error() {
     assert!(
         decide_phoebus_command(
             "{ \"notRealCommandMessage\": \"Should not parse\" }",
-            &PhoebusObservedStatePolicy::from_cache_entry(None),
+            &ObservedStatePolicy::new(None),
         )
         .is_err()
     );
@@ -29,7 +30,7 @@ fn should_decide_non_ack_phoebus_command_as_ignored() {
     assert_eq!(
         decide_phoebus_command(
             &serde_json::to_string(&command).unwrap(),
-            &PhoebusObservedStatePolicy::from_cache_entry(None),
+            &ObservedStatePolicy::new(None),
         ),
         Ok(PhoebusCommandDecision::IgnoreUnsupportedCommand)
     );
@@ -46,23 +47,28 @@ fn should_decide_duplicate_acknowledgement_command() {
     assert_eq!(
         decide_phoebus_command(
             &serde_json::to_string(&command).unwrap(),
-            &PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+            &ObservedStatePolicy::new(Some(CachedState {
                 state: State::Acknowledged,
                 wake: None,
             })),
         ),
-        Ok(PhoebusCommandDecision::DuplicateAcknowledgement)
+        Ok(PhoebusCommandDecision::SuppressedByPolicy)
     );
 }
 
 #[test]
 fn should_decide_malformed_phoebus_config_as_skipped_parse_error() {
+    let cached_metadata = PvMetadata {
+        phoebus_config_metadata: HashMap::new(),
+        display_path: String::new(),
+        phoebus_topic: String::new(),
+    };
+    let config = Config {
+        enabled: Some(String::from("not-a-real-enabled-value")),
+        ..Config::default()
+    };
     assert!(
-        decide_phoebus_config(
-            "{ \"notRealConfigMessage\": \"Should not parse\" }",
-            &Config::default(),
-        )
-        .is_err()
+        decide_phoebus_config(&config, &cached_metadata, &ObservedStatePolicy::new(None),).is_err()
     );
 }
 
@@ -74,117 +80,137 @@ fn should_decide_duplicate_phoebus_config() {
         ..Config::default()
     };
 
+    let cached_metadata = PvMetadata {
+        phoebus_config_metadata: config.phoebus_specific.clone(),
+        display_path: String::new(),
+        phoebus_topic: String::new(),
+    };
+
+    // When the observed state already matches the incoming state AND the phoebus_specific metadata
+    // is identical, the decision should be DuplicateConfig.
+    let observed = ObservedStatePolicy::new(Some(CachedState {
+        state: State::Bypassed,
+        wake: None,
+    }));
+
     assert_eq!(
-        decide_phoebus_config(&serde_json::to_string(&config).unwrap(), &config),
-        Ok(PhoebusConfigDecision {
-            decision_flag: PhoebusConfigDecisionFlag::DuplicateConfig,
-            config
-        })
+        decide_phoebus_config(&config, &cached_metadata, &observed),
+        Ok(PhoebusConfigDecision::DuplicateConfig)
     );
 }
 
 #[test]
 fn should_decide_config_with_same_enablement_as_metadata_only_update() {
-    let cached_config = Config {
-        enabled: Some(String::from("false")),
-        user: String::from("cached-user"),
-        ..Config::default()
-    };
+    // The incoming config has the same enablement (both bypassed) but different phoebus_specific
+    // metadata (e.g., a display label changed). This should be treated as a metadata-only update.
     let incoming_config = Config {
         enabled: Some(String::from("false")),
         user: String::from("incoming-user"),
+        phoebus_specific: HashMap::from([(
+            String::from("title"),
+            serde_json::Value::String(String::from("new-title")),
+        )]),
         ..Config::default()
     };
 
+    // The cached metadata has different phoebus_specific (empty), so it's not a full duplicate.
+    let cached_metadata = PvMetadata {
+        phoebus_config_metadata: HashMap::new(),
+        display_path: String::new(),
+        phoebus_topic: String::new(),
+    };
+
+    // The observed state already matches the incoming (both bypassed), but phoebus_specific differs.
+    let observed = ObservedStatePolicy::new(Some(CachedState {
+        state: State::Bypassed,
+        wake: None,
+    }));
+
     assert_eq!(
-        decide_phoebus_config(
-            &serde_json::to_string(&incoming_config).unwrap(),
-            &cached_config,
-        ),
-        Ok(PhoebusConfigDecision {
-            decision_flag: PhoebusConfigDecisionFlag::NoEnablementChange,
-            config: incoming_config,
-        })
+        decide_phoebus_config(&incoming_config, &cached_metadata, &observed),
+        Ok(PhoebusConfigDecision::NoEnablementChange)
     );
 }
 
 #[test]
 fn should_decide_bypassed_phoebus_config_as_controls_bypass_or_snooze() {
-    let cached_config = Config {
-        enabled: Some(String::from("true")),
-        ..Config::default()
-    };
     let incoming_config = Config {
         enabled: Some(String::from("false")),
         user: String::from("test-user"),
         ..Config::default()
     };
 
+    let cached_metadata = PvMetadata {
+        phoebus_config_metadata: HashMap::new(),
+        display_path: String::new(),
+        phoebus_topic: String::new(),
+    };
+
+    // The observed state is Unbypassed (active), so the incoming Bypassed state is not suppressed.
+    let observed = ObservedStatePolicy::new(Some(CachedState {
+        state: State::Unbypassed,
+        wake: None,
+    }));
+
     assert_eq!(
-        decide_phoebus_config(
-            &serde_json::to_string(&incoming_config).unwrap(),
-            &cached_config,
-        ),
-        Ok(PhoebusConfigDecision {
-            decision_flag: PhoebusConfigDecisionFlag::BypassOrSnooze {
-                updated_state: CachedState {
-                    state: State::Bypassed,
-                    wake: None,
-                }
-            },
-            config: incoming_config,
+        decide_phoebus_config(&incoming_config, &cached_metadata, &observed),
+        Ok(PhoebusConfigDecision::BypassOrSnooze {
+            updated_state: CachedState {
+                state: State::Bypassed,
+                wake: None,
+            }
         })
     );
 }
 
 #[test]
 fn should_decide_active_phoebus_config_as_local_only_recording() {
-    let cached_config = Config {
-        enabled: Some(String::from("false")),
-        ..Config::default()
-    };
     let incoming_config = Config {
         enabled: Some(String::from("true")),
         user: String::from("test-user"),
         ..Config::default()
     };
 
+    let cached_metadata = PvMetadata {
+        phoebus_config_metadata: HashMap::new(),
+        display_path: String::new(),
+        phoebus_topic: String::new(),
+    };
+
+    // The observed state is Bypassed, so the incoming Unbypassed state is not suppressed.
+    let observed = ObservedStatePolicy::new(Some(CachedState {
+        state: State::Bypassed,
+        wake: None,
+    }));
+
     assert_eq!(
-        decide_phoebus_config(
-            &serde_json::to_string(&incoming_config).unwrap(),
-            &cached_config,
-        ),
-        Ok(PhoebusConfigDecision {
-            decision_flag: PhoebusConfigDecisionFlag::RecordActiveLocally {
-                updated_state: CachedState {
-                    state: State::Ok,
-                    wake: None,
-                }
-            },
-            config: incoming_config,
+        decide_phoebus_config(&incoming_config, &cached_metadata, &observed),
+        Ok(PhoebusConfigDecision::RecordActive {
+            updated_state: CachedState {
+                state: State::Unbypassed,
+                wake: None,
+            }
         })
     );
 }
 
 #[test]
 fn should_decide_invalid_enablement_phoebus_config_as_malformed() {
-    let cached_config = Config {
-        enabled: Some(String::from("false")),
-        ..Config::default()
-    };
     let incoming_config = Config {
         enabled: Some(String::from("not-a-real-enabled-value")),
         user: String::from("test-user"),
         ..Config::default()
     };
 
-    assert!(
-        decide_phoebus_config(
-            &serde_json::to_string(&incoming_config).unwrap(),
-            &cached_config,
-        )
-        .is_err()
-    );
+    let cached_metadata = PvMetadata {
+        phoebus_config_metadata: HashMap::new(),
+        display_path: String::new(),
+        phoebus_topic: String::new(),
+    };
+
+    let observed = ObservedStatePolicy::new(None);
+
+    assert!(decide_phoebus_config(&incoming_config, &cached_metadata, &observed).is_err());
 }
 
 #[test]
@@ -195,16 +221,20 @@ fn should_decide_acknowledgement_command_as_controls_acknowledge() {
         ..Command::default()
     };
 
+    let expected_updated_state = CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    };
+
+    // When the observed state is None (no prior observation), an ack command should proceed.
     assert_eq!(
         decide_phoebus_command(
             &serde_json::to_string(&command).unwrap(),
-            &PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
-                state: State::Bypassed,
-                wake: None,
-            },)),
+            &ObservedStatePolicy::new(None),
         ),
         Ok(PhoebusCommandDecision::Acknowledge {
             user: String::from("test-user"),
+            updated_state: expected_updated_state,
         })
     );
 }
@@ -244,7 +274,7 @@ fn should_map_malformed_phoebus_config_to_skipped_outcome() {
 #[test]
 fn should_map_untracked_monitor_key_to_noise_ignored_outcome() {
     assert_eq!(
-        log_monitor_key_parse_outcome(
+        log_key_parse_outcome(
             "state:display/device",
             "{}",
             &KeyParseError::UnsupportedOperation,
@@ -258,7 +288,7 @@ fn should_map_untracked_monitor_key_to_noise_ignored_outcome() {
 #[test]
 fn should_map_malformed_monitor_key_to_skipped_outcome() {
     assert_eq!(
-        log_monitor_key_parse_outcome("malformed-key", "{}", &KeyParseError::MalformedStructure),
+        log_key_parse_outcome("malformed-key", "{}", &KeyParseError::MalformedStructure),
         SyncOutcome::Skipped {
             reason: SkipReason::MalformedMessage,
         }
@@ -276,29 +306,19 @@ fn should_treat_observed_acknowledged_state_as_duplicate_acknowledgement() {
     assert_eq!(
         decide_phoebus_command(
             &serde_json::to_string(&command).unwrap(),
-            &PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+            &ObservedStatePolicy::new(Some(CachedState {
                 state: State::Acknowledged,
                 wake: None,
             })),
         ),
-        Ok(PhoebusCommandDecision::DuplicateAcknowledgement)
+        Ok(PhoebusCommandDecision::SuppressedByPolicy)
     );
-}
-
-#[test]
-fn should_treat_observed_acknowledged_state_as_effectively_active_for_config_policy() {
-    let policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
-        state: State::Acknowledged,
-        wake: None,
-    }));
-    assert!(!policy.suppresses_bypass_duplicate(&CachedState::bypassed()));
-    assert!(policy.suppresses_activation_duplicate());
 }
 
 #[test]
 fn should_map_empty_device_monitor_key_to_skipped_outcome() {
     assert_eq!(
-        log_monitor_key_parse_outcome("command:display/", "{}", &KeyParseError::EmptyDevice),
+        log_key_parse_outcome("command:display/", "{}", &KeyParseError::EmptyDevice),
         SyncOutcome::Skipped {
             reason: SkipReason::MalformedMessage,
         }

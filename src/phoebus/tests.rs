@@ -2,6 +2,7 @@
 //!
 //! Tests the various functions in the Phoebus module.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
@@ -118,7 +119,7 @@ async fn should_sync_valid_bypass_config_with_false() {
         .update_cached_metadata(
             "MyDevice",
             PvMetadata {
-                config: initial_config,
+                phoebus_config_metadata: initial_config.phoebus_specific,
                 display_path: String::from("my/path/to"),
                 phoebus_topic: sync.config.phoebus_topics[0].clone(),
             },
@@ -166,7 +167,7 @@ async fn should_sync_valid_bypass_config_with_none() {
         .update_cached_metadata(
             "MyDevice",
             PvMetadata {
-                config: initial_config,
+                phoebus_config_metadata: initial_config.phoebus_specific,
                 display_path: String::from("my/path/to"),
                 phoebus_topic: sync.config.phoebus_topics[0].clone(),
             },
@@ -211,7 +212,7 @@ async fn should_sync_valid_snooze_config() {
         .update_cached_metadata(
             "MyDevice",
             PvMetadata {
-                config: initial_config,
+                phoebus_config_metadata: initial_config.phoebus_specific,
                 display_path: String::from("my/path/to"),
                 phoebus_topic: sync.config.phoebus_topics[0].clone(),
             },
@@ -254,7 +255,7 @@ async fn should_sync_valid_active_config_with_time() {
         .update_cached_metadata(
             "MyDevice",
             PvMetadata {
-                config: Config::default(),
+                phoebus_config_metadata: HashMap::new(),
                 display_path: String::from("my/path/to"),
                 phoebus_topic: sync.config.phoebus_topics[0].clone(),
             },
@@ -278,10 +279,10 @@ async fn should_sync_valid_active_config_with_time() {
                 .read()
                 .await
                 .get("MyDevice")
-                .is_some_and(|state| state.state == State::Ok)
+                .is_some_and(|state| state.state == State::Unbypassed)
         })
         .await
-        .expect("The alarm state was not set to 'Ok'");
+        .expect("The alarm state was not set to 'Unbypassed'");
 }
 
 #[tokio::test]
@@ -309,10 +310,10 @@ async fn should_sync_valid_active_config_with_true() {
                 .read()
                 .await
                 .get("MyDevice")
-                .is_some_and(|state| state.state == State::Ok)
+                .is_some_and(|state| state.state == State::Unbypassed)
         })
         .await
-        .expect("The alarm state was not set to 'Ok'");
+        .expect("The alarm state was not set to 'Unbypassed'");
 }
 
 #[tokio::test]
@@ -390,7 +391,7 @@ async fn should_not_sync_duplicated_config() {
         .update_cached_metadata(
             "MyDevice",
             PvMetadata {
-                config: config.clone(),
+                phoebus_config_metadata: config.phoebus_specific.clone(),
                 display_path: String::from("cached/display"),
                 phoebus_topic: test_instance.test_config.phoebus_topics[0].clone(),
             },
@@ -409,7 +410,7 @@ async fn should_not_sync_duplicated_config() {
                 .lookup_metadata_by_device("MyDevice")
                 .await
                 .is_some_and(|metadata| {
-                    metadata.config == config
+                    metadata.phoebus_config_metadata == config.phoebus_specific
                         && metadata.display_path == "cached/display"
                         && metadata.phoebus_topic == expected_topic
                 })
@@ -436,7 +437,7 @@ async fn should_not_sync_unexpected_enabled_states() {
         .update_cached_metadata(
             "BadEnabledStateDevice",
             PvMetadata {
-                config: initial_config.clone(),
+                phoebus_config_metadata: initial_config.phoebus_specific.clone(),
                 display_path: String::from("cached/display"),
                 phoebus_topic: test_instance.test_config.phoebus_topics[0].clone(),
             },
@@ -459,7 +460,7 @@ async fn should_not_sync_unexpected_enabled_states() {
                 .lookup_metadata_by_device("BadEnabledStateDevice")
                 .await
                 .is_some_and(|metadata| {
-                    metadata.config == initial_config
+                    metadata.phoebus_config_metadata == initial_config.phoebus_specific
                         && metadata.display_path == "cached/display"
                         && metadata.phoebus_topic == expected_topic
                 })
@@ -494,7 +495,7 @@ async fn should_only_refresh_local_cache_for_active_config_until_controls_suppor
         .update_cached_metadata(
             "MyDevice",
             PvMetadata {
-                config: previous_config,
+                phoebus_config_metadata: previous_config.phoebus_specific,
                 display_path: String::from("cached/display"),
                 phoebus_topic: sync.config.phoebus_topics[0].clone(),
             },
@@ -526,13 +527,13 @@ async fn should_only_refresh_local_cache_for_active_config_until_controls_suppor
                 .lookup_metadata_by_device("MyDevice")
                 .await
                 .is_some_and(|metadata| {
-                    metadata.config == active_config
+                    metadata.phoebus_config_metadata == active_config.phoebus_specific
                         && metadata.display_path == "cached/display"
                         && metadata.phoebus_topic == expected_topic
                 })
                 && alarm_states.read().await.get("MyDevice")
                     == Some(&CachedState {
-                        state: State::Ok,
+                        state: State::Unbypassed,
                         wake: None,
                     })
         })
@@ -558,7 +559,7 @@ async fn should_not_sync_already_bypassed_config() {
         .update_cached_metadata(
             "AlreadyBypassedDevice",
             PvMetadata {
-                config: initial_config,
+                phoebus_config_metadata: initial_config.phoebus_specific,
                 display_path: String::from("cached/display"),
                 phoebus_topic: test_instance.test_config.phoebus_topics[0].clone(),
             },
@@ -586,7 +587,7 @@ async fn should_not_sync_already_bypassed_config() {
         .has(message)
         .after_init_results_in(async move || {
             metadata_scope.lookup_metadata_by_device("AlreadyBypassedDevice").await.is_some_and(|metadata| {
-                metadata.config == config
+                metadata.phoebus_config_metadata == config.phoebus_specific
                     && metadata.display_path == "cached/display"
                     && metadata.phoebus_topic == expected_topic
             }) && alarm_states.read().await.get("AlreadyBypassedDevice")
@@ -626,7 +627,10 @@ async fn should_add_new_device_to_scope_from_runtime_config() {
                 .lookup_metadata_by_device("NewDevice")
                 .await
                 .is_some_and(|metadata| {
-                    metadata.config.enabled == Some(false.to_string())
+                    // phoebus_config_metadata is a HashMap<String, Value>; for a default Config
+                    // with only enabled="false", the phoebus_specific map is empty (enabled, host,
+                    // user are not part of phoebus_specific).
+                    metadata.phoebus_config_metadata == config.phoebus_specific
                         && metadata.display_path == "runtime/path"
                 })
                 && alarm_states

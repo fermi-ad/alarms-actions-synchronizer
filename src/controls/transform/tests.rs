@@ -1,5 +1,7 @@
 //! Tests for the Controls Transformations module.
 
+use std::collections::HashMap;
+
 use super::*;
 use crate::models::generated::Timestamp;
 use crate::models::phoebus::Config;
@@ -8,7 +10,7 @@ use crate::models::phoebus::Config;
 fn should_convert_command() {
     let status = Status::default();
     let metadata = PvMetadata {
-        config: Config::default(),
+        phoebus_config_metadata: HashMap::new(),
         display_path: String::new(),
         phoebus_topic: String::new(),
     };
@@ -30,7 +32,7 @@ fn should_convert_command() {
 fn should_convert_config() {
     let status = Status::default();
     let metadata = PvMetadata {
-        config: Config::default(),
+        phoebus_config_metadata: HashMap::new(),
         display_path: String::new(),
         phoebus_topic: String::new(),
     };
@@ -42,7 +44,8 @@ fn should_convert_config() {
         serde_json::to_string(&Config {
             enabled: Some(true.to_string()),
             host: CONTROLS_HOST.to_string(),
-            ..metadata.config
+            phoebus_specific: metadata.phoebus_config_metadata.clone(),
+            ..Config::default()
         })
         .unwrap()
     );
@@ -89,7 +92,7 @@ fn should_map_snoozed_state() {
 fn should_not_transform_when_operation_is_state() {
     let status = Status::default();
     let metadata = PvMetadata {
-        config: Config::default(),
+        phoebus_config_metadata: HashMap::new(),
         display_path: String::new(),
         phoebus_topic: String::new(),
     };

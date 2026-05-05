@@ -161,18 +161,12 @@ async fn should_parse_existing_messages() {
         metadata_scope
             .lookup_metadata_by_device("bypassed")
             .await
-            .is_some_and(
-                |metadata| metadata.config.enabled == Some(false.to_string())
-                    && metadata.display_path == "path/to"
-            )
+            .is_some_and(|metadata| metadata.display_path == "path/to")
     );
     assert!(
         metadata_scope
             .lookup_metadata_by_device("config_bypassed_then_state_ok")
             .await
-            .is_some_and(
-                |metadata| metadata.config.enabled == Some(false.to_string())
-                    && metadata.display_path == "path/to"
-            )
+            .is_some_and(|metadata| metadata.display_path == "path/to")
     );
 }

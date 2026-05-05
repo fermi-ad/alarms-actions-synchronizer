@@ -2,14 +2,15 @@
 //!
 //! Contains the [`Synchronizer`] for pushing Phoebus commands and configs into the Controls alarm server.
 
+use rust_pubsub_lib::{Publisher, Snapshot, Subscriber};
+use tokio::task::JoinSet;
+use tracing::info;
+
 use crate::models::{RuntimeSyncFactory, Synchronizer, SynchronizerConfig};
 use crate::phoebus::monitor::Monitor;
 use crate::utils::get_command_topic;
 use init::get_existing_messages_from_phoebus;
-use rust_pubsub_lib::{Publisher, Snapshot, Subscriber};
 use sync::ControlsClient;
-use tokio::task::JoinSet;
-use tracing::info;
 
 mod init;
 mod monitor;
@@ -22,6 +23,7 @@ mod tests;
 pub struct SyncImpl {
     config: SynchronizerConfig,
 }
+
 #[async_trait::async_trait]
 impl<P: Publisher, S: Subscriber + Send + Sync + 'static> Synchronizer<P, S> for SyncImpl {
     fn new(config: SynchronizerConfig) -> Self {

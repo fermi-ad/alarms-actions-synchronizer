@@ -4,16 +4,18 @@
 //! [`TestRunner`] descibes the common flow of a test case: some data appears on a given
 //! Kafka topic and the [`Synchronizer`] under test is expected to respond in a certain way.
 
-use crate::models::{Synchronizer, SynchronizerConfig, metadata::MetadataScope, phoebus::Config};
+use std::marker::PhantomData;
+use std::time::Duration;
+use std::{collections::HashMap, error::Error};
+
 use rust_pubsub_lib::{
     KafkaPublisher, KafkaSnapshot, KafkaSubscriber, KafkaTestHarness, Message, Publisher,
     StringMessage,
 };
-use std::marker::PhantomData;
-use std::time::Duration;
-use std::{collections::HashMap, error::Error};
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
+
+use crate::models::{Synchronizer, SynchronizerConfig, metadata::MetadataScope, phoebus::Config};
 
 /// The topic used in the tests for messages from Controls.
 pub const CONTROLS_TOPIC: &str = "controls";
@@ -34,7 +36,7 @@ pub enum MessageOrigin {
 }
 
 /// Generates a [`SynchronizerConfig`] instance where the Kafka topics are the default testing
-/// [`CONTROLS_TOPIC`] and [`PHOEBUS_TOPIC`].
+/// [`CONTROLS_TOPIC`] and [`PHOEBUS_TOPIC`] and all host strings are empty.
 fn get_mock_sync_config() -> SynchronizerConfig {
     SynchronizerConfig::new(
         CancellationToken::new(),
@@ -52,20 +54,25 @@ where
     M: Message<N>,
     T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static,
 {
+    /// The cancellation token used to stop the [`Synchronizer`] under test after the test completes.
     cancel_token: CancellationToken,
     pub test_config: SynchronizerConfig,
     /// The [`KafkaTestHarness`] containing the location of the test Kafka Cluster via its [`host()`](KafkaTestHarness::host) method.
     pub harness: KafkaTestHarness,
+    /// The message to send that initiates the behavior being tested.
     message: Option<M>,
+    /// Phantom marker to carry the message value type `N` without storing a value of that type.
     _message_type: PhantomData<N>,
+    /// The topic on which the test message will be published.
     send_topic: String,
     /// The [`Synchronizer`] instance being tested.
     pub sync: T,
 }
+
 impl<M: Message<N>, N, T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static>
     TestRunner<M, N, T>
 {
-    /// Generates a [`TestInstance`] for a [`Synchronizer`] that listens to messages from [`MessageOrigin`].
+    /// Generates a [`TestRunner`] for a [`Synchronizer`] that listens to messages from [`MessageOrigin`].
     ///
     /// A [`Message`] is simulated to be sent on the appropriate topic by calling [`has`](Self::has).
     ///
@@ -153,7 +160,7 @@ impl<M: Message<N>, N, T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send +
 
 /// Rewrites the synchronizer config so each test uses fresh Kafka topics allocated by the shared harness.
 ///
-/// [`KafkaTestHarness`](rust-pubsub-lib) uses a global mock cluster, so fixed topic names are visible across test
+/// [`KafkaTestHarness`] uses a global mock cluster, so fixed topic names are visible across test
 /// cases. Harness-generated unique topics keep startup hydration and runtime monitoring isolated to messages from the
 /// current test.
 async fn rewrite_config_topics_with_harness_topics(
@@ -172,7 +179,7 @@ async fn rewrite_config_topics_with_harness_topics(
     let _ = harness.host().await;
 }
 
-/// Determines which topic the injected test message should be sent on for the provided [`MessageOrigin`].
+/// Returns the topic on which the test message should be published based on the provided [`MessageOrigin`].
 fn prioritized_send_topic(origin: MessageOrigin, config: &SynchronizerConfig) -> String {
     let phoebus_topic = config.phoebus_topics[0].clone();
     match origin {
@@ -192,8 +199,7 @@ pub async fn send_test_message<N, M: Message<N>>(
     Ok(())
 }
 
-/// Helper method that sends the message to induce the behavior being tested and checks to see
-///  whether the desired outcome was observed.
+/// Sends the test message and waits for the provided condition to be satisfied.
 async fn do_test<N, M: Message<N>>(
     harness: KafkaTestHarness,
     message: M,
@@ -239,8 +245,7 @@ pub async fn await_phoebus_runtime_ready(
     .expect("Phoebus runtime readiness probe did not populate test metadata cache.");
 }
 
-/// Loops indefinitely while checking to see if the provided [`condition`](AsyncFnMut) has been met.
-/// Rechecks the condition every 100ms.
+/// Polls the provided async condition every 100ms until it returns `true`.
 async fn try_condition(mut condition: impl AsyncFnMut() -> bool) {
     loop {
         if condition().await {

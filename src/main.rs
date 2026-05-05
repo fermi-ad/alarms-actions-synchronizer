@@ -92,7 +92,7 @@ fn begin_phoebus_sync(sync_config: SynchronizerConfig) -> JoinHandle<()> {
 /// Spawns a new Tokio task containing a running instance of the configured runtime synchronizer type.
 ///
 /// This keeps the abstraction surface focused on the concrete Kafka runtime used by the application while
-/// still allowing tests to instantiate synchronizers directly through [`Synchronizer`](src/models/mod.rs:334).
+/// still allowing tests to instantiate synchronizers directly through [`Synchronizer`].
 fn begin_sync<T>(sync_config: SynchronizerConfig) -> JoinHandle<()>
 where
     T: RuntimeSyncFactory + Send + 'static,

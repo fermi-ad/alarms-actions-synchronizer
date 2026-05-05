@@ -1,5 +1,6 @@
 //! Tests for the Controls module.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rust_pubsub_lib::{KafkaPublisher, KafkaSubscriber, StringMessage};
@@ -9,8 +10,8 @@ use crate::models::alarm::status::State;
 use crate::models::outcomes::AttemptResult;
 use crate::models::phoebus::{Command, Config, Operation, PvMetadata};
 use crate::models::{
-    ACK_COMMAND, CachedState, SkipReason, SyncDirection, SyncOutcome,
-    read_controls_observed_state_policy, record_observed_alarm_state,
+    ACK_COMMAND, CachedState, SkipReason, SyncDirection, SyncOutcome, read_observed_state_policy,
+    record_alarm_state,
 };
 use crate::utils::test_runner::{MessageOrigin, TestRunner};
 
@@ -36,7 +37,7 @@ async fn should_continue_when_no_cached_alarm_state() {
         .update_cached_metadata(
             "",
             PvMetadata {
-                config: Config::default(),
+                phoebus_config_metadata: HashMap::new(),
                 display_path: String::new(),
                 phoebus_topic: phoebus_topic.clone(),
             },
@@ -97,26 +98,15 @@ async fn should_treat_epics_device_without_phoebus_metadata_as_out_of_scope() {
     };
     let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
-    let cached_status = Status {
-        state: State::Alarmed.into(),
-        ..status.clone()
-    };
     let test_instance = get_test_instance().await;
     let sync = &test_instance.sync;
-    sync.alarm_states
-        .write()
-        .await
-        .insert(String::new(), cached_status.clone().into());
     let cache = Arc::clone(&sync.alarm_states);
-    let expected_cached = CachedState::from_status(&cached_status);
 
     test_instance
         .has(message)
-        .results_in(async move || {
-            cache.read().await.get("").cloned() == Some(expected_cached.clone())
-        })
+        .results_in(async move || cache.read().await.get("").is_none())
         .await
-        .expect("Out-of-scope EPICS device should preserve previously cached observed state.");
+        .expect("Out-of-scope EPICS device should not update the observed alarm state cache.");
 }
 
 #[tokio::test]
@@ -128,7 +118,7 @@ async fn should_not_sync_when_alarm_state_is_not_syncable() {
         .update_cached_metadata(
             "",
             PvMetadata {
-                config: Config::default(),
+                phoebus_config_metadata: HashMap::new(),
                 display_path: String::new(),
                 phoebus_topic: String::new(),
             },
@@ -137,29 +127,17 @@ async fn should_not_sync_when_alarm_state_is_not_syncable() {
 
     let status = Status {
         source: Source::Epics.into(),
+        state: State::Ok.into(),
         ..Status::default()
     };
-
-    sync.alarm_states
-        .write()
-        .await
-        .insert(String::new(), status.clone().into());
-
-    let expected_status = Status {
-        state: State::Ok.into(),
-        ..status
-    };
-    let expected_cached = CachedState::from_status(&expected_status);
-    let message = StringMessage::from_value(serde_json::to_string(&expected_status).unwrap());
+    let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
     let cache = Arc::clone(&sync.alarm_states);
 
     test_instance
         .has(message)
-        .results_in(async move || {
-            cache.read().await.get("").cloned() == Some(expected_cached.clone())
-        })
+        .results_in(async move || cache.read().await.get("").is_none())
         .await
-        .expect("Non-syncable Controls state should still refresh latest observed state.");
+        .expect("Non-syncable Controls state should not update the observed alarm state cache.");
 }
 
 #[tokio::test]
@@ -171,7 +149,7 @@ async fn should_treat_unchanged_state_as_duplicate() {
         .update_cached_metadata(
             "",
             PvMetadata {
-                config: Config::default(),
+                phoebus_config_metadata: HashMap::new(),
                 display_path: String::new(),
                 phoebus_topic: String::new(),
             },
@@ -187,9 +165,9 @@ async fn should_treat_unchanged_state_as_duplicate() {
     sync.alarm_states
         .write()
         .await
-        .insert(String::new(), status.clone().into());
+        .insert(String::new(), CachedState::from(&status));
     let cache = Arc::clone(&sync.alarm_states);
-    let expected_cached = CachedState::from_status(&status);
+    let expected_cached = CachedState::from(&status);
 
     test_instance
         .has(message)
@@ -209,7 +187,7 @@ async fn should_not_sync_when_no_publisher_for_topic() {
         .update_cached_metadata(
             "",
             PvMetadata {
-                config: Config::default(),
+                phoebus_config_metadata: HashMap::new(),
                 display_path: String::new(),
                 // Use an empty string topic — no publisher will exist for this
                 phoebus_topic: String::new(),
@@ -222,12 +200,7 @@ async fn should_not_sync_when_no_publisher_for_topic() {
         ..Status::default()
     };
 
-    sync.alarm_states
-        .write()
-        .await
-        .insert(String::new(), status.clone().into());
-
-    let expected_cached = CachedState::from_status(&Status {
+    let expected_cached = CachedState::from(&Status {
         state: State::Acknowledged.into(),
         ..status.clone()
     });
@@ -253,13 +226,12 @@ async fn should_not_sync_when_no_publisher_for_topic() {
 }
 
 #[tokio::test]
-async fn should_record_acnet_device_without_transmitting() {
+async fn should_ignore_acnet_device_without_transmitting() {
     let status = Status {
         source: Source::Analog.into(),
         ..Status::default()
     };
 
-    let expected_cached = CachedState::from_status(&status);
     let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
     let test_instance = get_test_instance().await;
@@ -267,11 +239,9 @@ async fn should_record_acnet_device_without_transmitting() {
 
     test_instance
         .has(message)
-        .results_in(async move || {
-            cache.read().await.get("").cloned() == Some(expected_cached.clone())
-        })
+        .results_in(async move || cache.read().await.get("").is_none())
         .await
-        .expect("External-source Controls state should be recorded for loop prevention.");
+        .expect("ACNET device should be ignored without updating the observed alarm state cache.");
 }
 
 #[tokio::test]
@@ -286,9 +256,11 @@ async fn should_not_transmit_unknown_device() {
 
     test_instance
         .has(message)
-        .results_in(async || cache.read().await.contains_key(""))
+        .results_in(async || !cache.read().await.contains_key(""))
         .await
-        .expect("Did not detect expected log message.");
+        .expect(
+            "Unknown (non-EPICS) device should not be recorded in the observed alarm state cache.",
+        );
 }
 
 #[test]
@@ -341,23 +313,23 @@ async fn should_read_controls_policy_duplicate_only_for_exact_match() {
 
     sync.alarm_states.write().await.insert(
         status.device.clone(),
-        Status {
+        CachedState::from(&Status {
             wake: None,
             ..status.clone()
-        }
-        .into(),
+        }),
     );
 
-    let policy = read_controls_observed_state_policy(&sync.alarm_states, &status).await;
-    assert!(!policy.suppresses_duplicate());
+    let incoming = CachedState::from(&status);
+    let policy = read_observed_state_policy(&sync.alarm_states, &status.device).await;
+    assert!(!policy.suppresses_incoming(&incoming));
 
     sync.alarm_states
         .write()
         .await
-        .insert(status.device.clone(), CachedState::from_status(&status));
+        .insert(status.device.clone(), CachedState::from(&status));
 
-    let policy = read_controls_observed_state_policy(&sync.alarm_states, &status).await;
-    assert!(policy.suppresses_duplicate());
+    let policy = read_observed_state_policy(&sync.alarm_states, &status.device).await;
+    assert!(policy.suppresses_incoming(&incoming));
 }
 
 #[tokio::test]
@@ -373,19 +345,18 @@ async fn should_record_controls_policy_latest_incoming_state_for_local_only_path
 
     sync.alarm_states.write().await.insert(
         status.device.clone(),
-        Status {
+        CachedState::from(&Status {
             state: State::Ok.into(),
             ..status.clone()
-        }
-        .into(),
+        }),
     );
 
-    let policy = read_controls_observed_state_policy(&sync.alarm_states, &status).await;
-    record_observed_alarm_state(&sync.alarm_states, policy.device(), policy.recorded_state()).await;
+    let incoming = CachedState::from(&status);
+    record_alarm_state(&sync.alarm_states, &status.device, incoming.clone()).await;
 
     assert_eq!(
         sync.alarm_states.read().await.get(&status.device).cloned(),
-        Some(CachedState::from_status(&status))
+        Some(incoming)
     );
 }
 
@@ -398,13 +369,13 @@ fn should_decide_non_sync_epics_state_as_ignored() {
     };
 
     let pv_metadata = PvMetadata {
-        config: Config::default(),
+        phoebus_config_metadata: HashMap::new(),
         display_path: String::new(),
         phoebus_topic: String::new(),
     };
 
     assert!(matches!(
-        decide_epics_sync(&status, Some(pv_metadata)),
+        decide_controls_sync(&status, ObservedStatePolicy::new(None), Some(pv_metadata)),
         ControlsInboundDecision::IgnoreNonSyncState
     ));
 }
@@ -418,7 +389,7 @@ fn should_decide_missing_metadata_as_out_of_scope() {
     };
 
     assert!(matches!(
-        decide_epics_sync(&status, None),
+        decide_controls_sync(&status, ObservedStatePolicy::new(None), None),
         ControlsInboundDecision::OutOfScope
     ));
 }
@@ -431,20 +402,28 @@ fn should_decide_acknowledged_epics_state_as_command_sync() {
         ..Status::default()
     };
     let pv_metadata = PvMetadata {
-        config: Config::default(),
+        phoebus_config_metadata: HashMap::new(),
         display_path: String::from("display"),
         phoebus_topic: String::from("topic"),
     };
 
-    match decide_epics_sync(&status, Some(pv_metadata.clone())) {
+    match decide_controls_sync(
+        &status,
+        ObservedStatePolicy::new(None),
+        Some(pv_metadata.clone()),
+    ) {
         ControlsInboundDecision::SyncToPhoebus {
             operation,
             pv_metadata: decided_metadata,
+            ..
         } => {
             assert_eq!(operation, Operation::Command);
             assert_eq!(decided_metadata.display_path, pv_metadata.display_path);
             assert_eq!(decided_metadata.phoebus_topic, pv_metadata.phoebus_topic);
-            assert_eq!(decided_metadata.config, pv_metadata.config);
+            assert_eq!(
+                decided_metadata.phoebus_config_metadata,
+                pv_metadata.phoebus_config_metadata
+            );
         }
         decision => panic!("Expected sync decision, got {decision:?}"),
     }
@@ -458,20 +437,28 @@ fn should_decide_bypassed_epics_state_as_config_sync() {
         ..Status::default()
     };
     let pv_metadata = PvMetadata {
-        config: Config::default(),
+        phoebus_config_metadata: HashMap::new(),
         display_path: String::from("display"),
         phoebus_topic: String::from("topic"),
     };
 
-    match decide_epics_sync(&status, Some(pv_metadata.clone())) {
+    match decide_controls_sync(
+        &status,
+        ObservedStatePolicy::new(None),
+        Some(pv_metadata.clone()),
+    ) {
         ControlsInboundDecision::SyncToPhoebus {
             operation,
             pv_metadata: decided_metadata,
+            ..
         } => {
             assert_eq!(operation, Operation::Config);
             assert_eq!(decided_metadata.display_path, pv_metadata.display_path);
             assert_eq!(decided_metadata.phoebus_topic, pv_metadata.phoebus_topic);
-            assert_eq!(decided_metadata.config, pv_metadata.config);
+            assert_eq!(
+                decided_metadata.phoebus_config_metadata,
+                pv_metadata.phoebus_config_metadata
+            );
         }
         decision => panic!("Expected sync decision, got {decision:?}"),
     }
@@ -493,7 +480,7 @@ async fn should_sync_valid_acknowledge_message() {
         .update_cached_metadata(
             "",
             PvMetadata {
-                config: Config::default(),
+                phoebus_config_metadata: HashMap::new(),
                 display_path: String::new(),
                 phoebus_topic: phoebus_topic.clone(),
             },
@@ -508,7 +495,7 @@ async fn should_sync_valid_acknowledge_message() {
     sync.alarm_states
         .write()
         .await
-        .insert(String::new(), status.clone().into());
+        .insert(String::new(), CachedState::from(&status));
 
     let message = StringMessage::from_value(
         serde_json::to_string(&Status {
@@ -564,7 +551,7 @@ async fn should_sync_valid_bypass_message() {
         .update_cached_metadata(
             "",
             PvMetadata {
-                config: Config::default(),
+                phoebus_config_metadata: HashMap::new(),
                 display_path: String::new(),
                 phoebus_topic: phoebus_topic.clone(),
             },
@@ -579,7 +566,7 @@ async fn should_sync_valid_bypass_message() {
     sync.alarm_states
         .write()
         .await
-        .insert(String::new(), status.clone().into());
+        .insert(String::new(), CachedState::from(&status));
 
     let message = StringMessage::from_value(
         serde_json::to_string(&Status {

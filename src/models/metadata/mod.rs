@@ -37,14 +37,14 @@ mod tests;
 #[derive(Clone, Debug)]
 pub struct MetadataScope {
     /// The atomic cache of PV metadata.
-    pv_metadata: Arc<RwLock<HashMap<String, PvMetadata>>>,
+    metadata_cache: Arc<RwLock<HashMap<String, PvMetadata>>>,
 }
 
 impl MetadataScope {
     /// Creates a new [`MetadataScope`] from the shared PvCache.
     pub fn new() -> Self {
         Self {
-            pv_metadata: Arc::new(RwLock::default()),
+            metadata_cache: Arc::new(RwLock::default()),
         }
     }
 
@@ -57,7 +57,7 @@ impl MetadataScope {
     /// processed for synchronization. Missing metadata means the device is
     /// currently out of scope.
     pub async fn lookup_metadata_by_device(&self, device: &str) -> Option<PvMetadata> {
-        self.pv_metadata.read().await.get(device).cloned()
+        self.metadata_cache.read().await.get(device).cloned()
     }
 
     /// Updates the cached metadata for a device.
@@ -70,7 +70,7 @@ impl MetadataScope {
     /// - `device`: The device name (PV name)
     /// - `new_metadata`: The new or updated metadata to store
     pub async fn update_cached_metadata(&self, device: &str, new_metadata: PvMetadata) {
-        self.pv_metadata
+        self.metadata_cache
             .write()
             .await
             .insert(device.to_string(), new_metadata);
@@ -79,7 +79,7 @@ impl MetadataScope {
 
 impl PartialEq for MetadataScope {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.pv_metadata, &other.pv_metadata)
+        Arc::ptr_eq(&self.metadata_cache, &other.metadata_cache)
     }
 }
 
@@ -102,7 +102,7 @@ impl PartialEq for MetadataScope {
 /// A new `PvMetadata` instance with the provided configuration and derived fields.
 pub fn build_metadata_from_config(key: &Key, config: &Config, topic: &str) -> PvMetadata {
     PvMetadata {
-        config: config.clone(),
+        phoebus_config_metadata: config.phoebus_specific.clone(),
         display_path: key.display_path.clone(),
         phoebus_topic: normalize_topic(topic),
     }

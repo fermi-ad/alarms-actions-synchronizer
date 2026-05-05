@@ -3,13 +3,14 @@
 //! Contains various helper methods for transforming a Controls [`Status`] into an
 //! appropriate [`Message`] for Phoebus.
 
+use chrono::{TimeZone, Utc};
+use rust_pubsub_lib::{Message, StringMessage};
+
 use crate::models::ACK_COMMAND;
 use crate::models::alarm::Status;
 use crate::models::alarm::status::State;
 use crate::models::phoebus::{Command, Config, NormalizedEnablement, Operation, PvMetadata};
 use crate::utils::get_command_topic;
-use chrono::{TimeZone, Utc};
-use rust_pubsub_lib::{Message, StringMessage};
 
 #[cfg(test)]
 mod tests;
@@ -21,7 +22,7 @@ const CONTROLS_HOST: &str = "Flutter Alarms App";
 pub fn state_to_operation(alarm_state: State) -> Option<Operation> {
     match alarm_state {
         State::Acknowledged => Some(Operation::Command),
-        State::Bypassed => Some(Operation::Config),
+        State::Bypassed | State::Unbypassed => Some(Operation::Config),
         _ => None,
     }
 }
@@ -47,7 +48,7 @@ pub fn controls_to_phoebus(
                 enabled: updated_enabled,
                 host: CONTROLS_HOST.to_string(),
                 user: controls_alarm.user.clone(),
-                ..metadata.config.clone()
+                phoebus_specific: metadata.phoebus_config_metadata.clone(),
             })
         }
         Operation::State => return Err(Operation::unsupported_sync_action_error()),

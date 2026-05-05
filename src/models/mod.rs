@@ -17,12 +17,7 @@ mod common {
         //! Also contains the gRPC interface for issuing commands to the Controls
         //! alarm service.
         tonic::include_proto!("common.alarm");
-
-        // Need to nest this one more level due to the `v1` suffix. Otherwise the protobuf Timestamp reference won't line up.
-        pub use commands::*;
-        mod commands {
-            tonic::include_proto!("services.alarm_commands.v1");
-        }
+        tonic::include_proto!("services.alarm_commands");
     }
 }
 
@@ -45,9 +40,8 @@ pub use common::alarm;
 pub use google::protobuf as generated;
 
 pub use cache::{
-    AlarmStateCache, CachedState, ControlsObservedStatePolicy, PhoebusObservedStatePolicy,
-    read_controls_observed_state_policy, read_phoebus_observed_state_policy,
-    record_observed_alarm_state, record_startup_config_state, record_startup_state_evidence,
+    AlarmStateCache, CachedState, ObservedStatePolicy, read_observed_state_policy,
+    record_alarm_state, record_startup_state_evidence,
 };
 
 pub use config::{

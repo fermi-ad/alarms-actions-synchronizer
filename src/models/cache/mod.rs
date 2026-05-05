@@ -42,25 +42,17 @@ pub struct CachedState {
 }
 
 impl CachedState {
+    /// Creates a [`CachedState`] representing an indefinitely bypassed alarm with no scheduled wake time.
     pub fn bypassed() -> Self {
         Self {
             state: State::Bypassed,
             wake: None,
         }
     }
-
-    /// Creates a cached state value from a Controls [`Status`].
-    pub fn from_status(status: &Status) -> Self {
-        status.clone().into()
-    }
-
-    /// Returns whether this state matches the provided incoming state exactly for duplicate suppression.
-    pub fn matches(&self, incoming: &CachedState) -> bool {
-        self == incoming
-    }
 }
 
 impl Default for CachedState {
+    /// Returns a [`CachedState`] with [`State::Unknown`] and no wake time, representing an unobserved alarm.
     fn default() -> Self {
         Self {
             state: State::Unknown,
@@ -69,8 +61,9 @@ impl Default for CachedState {
     }
 }
 
-impl From<Status> for CachedState {
-    fn from(value: Status) -> Self {
+impl From<&Status> for CachedState {
+    /// Converts a Controls [`Status`] into a [`CachedState`] by extracting its state and wake fields.
+    fn from(value: &Status) -> Self {
         CachedState {
             state: value.state(),
             wake: value.wake,
@@ -79,10 +72,13 @@ impl From<Status> for CachedState {
 }
 
 impl From<bool> for CachedState {
+    /// Converts a boolean enablement flag into a [`CachedState`].
+    ///
+    /// `true` maps to [`State::Unbypassed`]; `false` maps to [`State::Bypassed`] with no wake time.
     fn from(is_active: bool) -> Self {
         Self {
             state: if is_active {
-                State::Ok
+                State::Unbypassed
             } else {
                 State::Bypassed
             },
@@ -92,6 +88,10 @@ impl From<bool> for CachedState {
 }
 
 impl<Tz: TimeZone> From<DateTime<Tz>> for CachedState {
+    /// Converts a datetime into a [`CachedState`].
+    ///
+    /// If the datetime is in the future, the state is [`State::Bypassed`] with the wake time set.
+    /// If the datetime is in the past or present, the state is [`State::Unbypassed`] with no wake time.
     fn from(value: DateTime<Tz>) -> Self {
         if value.timestamp_millis() > Utc::now().timestamp_millis() {
             Self {
@@ -103,136 +103,50 @@ impl<Tz: TimeZone> From<DateTime<Tz>> for CachedState {
             }
         } else {
             Self {
-                state: State::Ok,
+                state: State::Unbypassed,
                 wake: None,
             }
         }
     }
 }
 
-/// Tiny shared policy surface for Controls-originated inbound intent.
+/// Encapsulates the latest observed state for a device and provides policy-level suppression logic.
+///
+/// Used to prevent duplicate synchronization attempts and to guard against forbidden state transitions
+/// (e.g., a bypassed device being re-alarmed without an explicit unbypass).
 #[derive(Clone, Debug, PartialEq)]
-pub struct ControlsObservedStatePolicy {
-    device: String,
-    incoming: CachedState,
+pub struct ObservedStatePolicy {
     observed: Option<CachedState>,
 }
 
-impl ControlsObservedStatePolicy {
-    /// Creates a policy for an incoming Controls alarm and the current observed-state cache entry, if any.
-    pub fn from_status(status: &Status, observed: Option<CachedState>) -> Self {
-        Self {
-            device: status.device.clone(),
-            incoming: CachedState::from_status(status),
-            observed,
-        }
-    }
-
-    /// Returns the device whose observed-state semantics are being evaluated.
-    pub fn device(&self) -> &str {
-        &self.device
-    }
-
-    /// Returns whether the current observed cache entry suppresses this Controls update as a duplicate.
-    pub fn suppresses_duplicate(&self) -> bool {
-        self.observed
-            .as_ref()
-            .is_some_and(|observed| observed.matches(&self.incoming))
-    }
-
-    /// Returns the latest-observed state that should be recorded after processing this Controls update.
-    ///
-    /// Controls preserves the current latest-observed incoming state locally for duplicate suppression and loop
-    /// prevention, including after local-only handling and after attempted outbound sync regardless of transport
-    /// result.
-    pub fn recorded_state(&self) -> CachedState {
-        self.incoming.clone()
-    }
-}
-
-/// Tiny shared policy surface for Phoebus-originated inbound intent.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PhoebusObservedStatePolicy {
-    observed: Option<CachedState>,
-}
-
-impl PhoebusObservedStatePolicy {
-    /// Creates a policy for the current observed-state cache entry, if any.
-    pub fn from_cache_entry(observed: Option<CachedState>) -> Self {
+impl ObservedStatePolicy {
+    /// Creates a new [`ObservedStatePolicy`] from the latest observed [`CachedState`] for a device, if any.
+    pub fn new(observed: Option<CachedState>) -> Self {
         Self { observed }
     }
 
-    /// Returns whether the current observed cache entry suppresses a repeated acknowledgement command.
-    pub fn suppresses_acknowledgement_duplicate(&self) -> bool {
+    /// Returns `true` if the observed state should suppress the incoming state.
+    ///
+    /// Suppression occurs when the incoming state is identical to the observed state, or when
+    /// the transition from the observed state to the incoming state is forbidden by policy.
+    pub fn suppresses_incoming(&self, incoming: &CachedState) -> bool {
         self.observed
             .as_ref()
-            .is_some_and(|observed| observed.state == State::Acknowledged)
-    }
-
-    /// Returns whether the current observed cache entry suppresses a repeated bypass/snooze config intent.
-    pub fn suppresses_bypass_duplicate(&self, incoming: &CachedState) -> bool {
-        self.observed
-            .as_ref()
-            .is_some_and(|observed| observed.matches(incoming))
-    }
-
-    /// Returns whether the current observed cache entry should treat Phoebus re-activation as already recorded
-    /// for the current asymmetric config policy.
-    pub fn suppresses_activation_duplicate(&self) -> bool {
-        self.observed
-            .as_ref()
-            .is_some_and(|observed| observed.state != State::Bypassed)
+            .is_some_and(|observed| observed_suppresses_incoming(observed, incoming))
     }
 }
 
-/// Reads the latest observed alarm state for `device`, if any.
-pub async fn read_observed_alarm_state(
+/// Creates the shared observed-state policy for an incoming alarm.
+pub async fn read_observed_state_policy(
     cache: &AlarmStateCache,
     device: &str,
-) -> Option<CachedState> {
-    cache.read().await.get(device).cloned()
-}
-
-/// Creates the shared Controls observed-state policy for an incoming alarm.
-pub async fn read_controls_observed_state_policy(
-    cache: &AlarmStateCache,
-    status: &Status,
-) -> ControlsObservedStatePolicy {
-    ControlsObservedStatePolicy::from_status(
-        status,
-        read_observed_alarm_state(cache, &status.device).await,
-    )
-}
-
-/// Creates the shared Phoebus observed-state policy for a device from the latest observed cache entry.
-pub async fn read_phoebus_observed_state_policy(
-    cache: &AlarmStateCache,
-    device: &str,
-) -> PhoebusObservedStatePolicy {
-    PhoebusObservedStatePolicy::from_cache_entry(read_observed_alarm_state(cache, device).await)
+) -> ObservedStatePolicy {
+    let observed = cache.read().await.get(device).cloned();
+    ObservedStatePolicy::new(observed)
 }
 
 /// Records the latest observed alarm state for `device`.
-pub async fn record_observed_alarm_state(
-    cache: &AlarmStateCache,
-    device: &str,
-    observed_state: CachedState,
-) {
-    cache
-        .write()
-        .await
-        .insert(device.to_owned(), observed_state);
-}
-
-/// Records a startup-hydrated alarm state derived from a Phoebus config record.
-///
-/// Config records are the authoritative source for bypass/snooze semantics and always overwrite any
-/// previously cached entry for the device.
-pub async fn record_startup_config_state(
-    cache: &AlarmStateCache,
-    device: &str,
-    state: CachedState,
-) {
+pub async fn record_alarm_state(cache: &AlarmStateCache, device: &str, state: CachedState) {
     cache.write().await.insert(device.to_owned(), state);
 }
 
@@ -259,4 +173,21 @@ pub async fn record_startup_state_evidence(
         return;
     }
     writer.insert(device.to_owned(), state);
+}
+
+/// Returns `true` if the observed state should suppress the incoming state.
+///
+/// Suppression occurs when the two states are equal (duplicate) or when the transition is forbidden.
+fn observed_suppresses_incoming(observed: &CachedState, incoming: &CachedState) -> bool {
+    observed == incoming || is_transition_forbidden(observed, incoming)
+}
+
+/// Guards against a device coming out of bypass unless the new state us an updated bypass (i.e., the timer on a snoozed alarm was changed)
+/// or the device was explicitly unbypassed.
+fn is_transition_forbidden(observed: &CachedState, incoming: &CachedState) -> bool {
+    observed.state == State::Bypassed
+        && match incoming.state {
+            State::Bypassed | State::Unbypassed => false,
+            _ => true,
+        }
 }

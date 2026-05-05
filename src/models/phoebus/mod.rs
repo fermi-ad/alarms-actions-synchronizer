@@ -57,6 +57,7 @@ pub enum NormalizedEnablement {
     /// The alarm is snoozed until the provided RFC3339 time.
     SnoozedUntil(DateTime<chrono::FixedOffset>),
 }
+
 impl NormalizedEnablement {
     /// Converts normalized Phoebus enablement into the synchronizer's cached-state model.
     pub fn as_cached_state(&self) -> CachedState {
@@ -112,6 +113,7 @@ pub struct Config {
     #[serde(flatten)]
     pub phoebus_specific: HashMap<String, Value>,
 }
+
 impl Config {
     /// Generates an instance of [`CachedState`] based on the normalized meaning of [`enabled`](Config::enabled).
     pub fn as_cached_state(&self) -> Result<CachedState, PhoebusParseError> {
@@ -155,7 +157,10 @@ pub enum KeyParseError {
 /// Structured parse failure for Phoebus command or config decision-making.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhoebusParseError {
+    /// The Phoebus message value could not be parsed into the expected structure.
     MalformedMessage,
+    /// The parsed Phoebus state is valid but not one the synchronizer expects in this context.
+    UnexpectedState,
 }
 
 /// This struct is a convenience for parsing the key of a Phoebus Kafka message.
@@ -171,6 +176,7 @@ pub struct Key {
     /// everything before the first `:` character.
     pub operation: Operation,
 }
+
 impl Key {
     /// Parses a Phoebus wire key into a structured representation, rejecting malformed or unsupported inputs explicitly.
     pub fn parse(value: &str) -> Result<Self, KeyParseError> {
@@ -202,10 +208,14 @@ impl Key {
 /// Encapsulates the Phoebus wire-level operation prefixes that this synchronizer understands.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Operation {
+    /// A command operation, used for acknowledgement messages sent on the command topic.
     Command,
+    /// A config operation, used for enablement and bypass configuration messages.
     Config,
+    /// A state operation, used for alarm state update messages.
     State,
 }
+
 impl Operation {
     /// Provides a [`String`] to use when an attempt is made to build an outbound sync message for a
     /// Controls state that does not map to a supported Phoebus synchronization action.
@@ -237,9 +247,9 @@ impl Operation {
 /// Allows the sync service to push updates to Phoebus without damaging other parts of the alarm configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PvMetadata {
-    /// The last configuration record received for this PV. Preserved so future updates to the enabled state of the alarm
+    /// The extraneous PV config value for Phoebus. Preserved so future updates to the enabled state of the alarm
     /// do not erase other config data.
-    pub config: Config,
+    pub phoebus_config_metadata: HashMap<String, Value>,
 
     /// The path to the PV in the Phoebus display. Extracted from the config message key.
     pub display_path: String,
@@ -257,7 +267,7 @@ pub struct PvMetadata {
 /// - an omitted field
 ///
 /// Missing and null values deserialize to [`None`], which the producer convention treats as falsy. The
-/// normalization step in [`Config::normalized_enablement()`] then maps that wire-level value into a named
+/// normalization step in `Config::normalize_enablement()` then maps that wire-level value into a named
 /// domain concept.
 fn bool_or_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where

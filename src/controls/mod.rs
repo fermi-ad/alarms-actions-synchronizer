@@ -11,23 +11,28 @@
 //! - the shared [`AlarmStateCache`](src/models/mod.rs) stores latest observed in-scope state, not latest confirmed mirroring success
 //! - missing Phoebus metadata means "out of scope right now," including for devices that may appear later through runtime Phoebus discovery
 
-use crate::models::alarm::Status;
-use crate::models::alarm::status::Source;
-use crate::models::metadata::MetadataScope;
-use crate::models::phoebus::{Operation, PvMetadata};
-use crate::models::{
-    AlarmStateCache, ControlsObservedStatePolicy, IgnoreReason, OutboundSyncResult,
-    RuntimeSyncFactory, SyncDirection, SyncOutcome, Synchronizer, SynchronizerConfig,
-    read_controls_observed_state_policy, record_observed_alarm_state,
-};
-use crate::utils::get_command_topic;
-use rust_pubsub_lib::{Message, PubSubError, Publisher, Snapshot, StringMessage, Subscriber};
 use std::collections::HashMap;
 use std::time::Duration;
+
+use rust_pubsub_lib::{
+    KafkaPublisher, KafkaSnapshot, KafkaSubscriber, Message, PubSubError, Publisher, Snapshot,
+    StringMessage, Subscriber,
+};
 use tokio::time::sleep;
 use tokio_stream::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+
+use crate::models::alarm::Status;
+use crate::models::alarm::status::{Source, State};
+use crate::models::metadata::MetadataScope;
+use crate::models::phoebus::{Operation, PvMetadata};
+use crate::models::{
+    AlarmStateCache, CachedState, IgnoreReason, ObservedStatePolicy, OutboundSyncResult,
+    RuntimeSyncFactory, SkipReason, SyncDirection, SyncOutcome, Synchronizer, SynchronizerConfig,
+    read_observed_state_policy, record_alarm_state,
+};
+use crate::utils::get_command_topic;
 
 mod transform;
 
@@ -57,8 +62,8 @@ pub struct SyncImpl<P: Publisher> {
 
 impl<P: Publisher> SyncImpl<P> {
     /// Creates the shared observed-state policy for an incoming Controls alarm.
-    async fn observed_state_policy(&self, controls_alarm: &Status) -> ControlsObservedStatePolicy {
-        read_controls_observed_state_policy(&self.alarm_states, controls_alarm).await
+    async fn get_last_observed_state(&self, device: &str) -> ObservedStatePolicy {
+        read_observed_state_policy(&self.alarm_states, device).await
     }
 
     /// Extracts the PV metadata record for the provided `device`.
@@ -66,28 +71,6 @@ impl<P: Publisher> SyncImpl<P> {
     /// The presence of Phoebus metadata determines whether an EPICS device is in scope for synchronization.
     async fn get_pv_metadata(&self, device: &str) -> Option<PvMetadata> {
         self.metadata_scope.lookup_metadata_by_device(device).await
-    }
-
-    /// Records a Controls update that carries no synchronization-relevant user intent for Phoebus.
-    async fn record_non_sync_controls_state(
-        &self,
-        controls_alarm: &Status,
-        observed_state_policy: &ControlsObservedStatePolicy,
-    ) -> SyncOutcome {
-        debug!(
-            "Received Controls alarm update for device {} with new state {:?} that does not require synchronization. Recording latest observed state for loop prevention and doing nothing.",
-            controls_alarm.device,
-            controls_alarm.state()
-        );
-        record_observed_alarm_state(
-            &self.alarm_states,
-            observed_state_policy.device(),
-            observed_state_policy.recorded_state(),
-        )
-        .await;
-        SyncOutcome::Ignored {
-            reason: IgnoreReason::StateNoise,
-        }
     }
 
     /// Loops over elements of the [`Stream`] and processes them. Detects when a cancel has been invoked and terminates the process.
@@ -125,7 +108,7 @@ impl<P: Publisher> SyncImpl<P> {
                     "Could not find a relevant topic for operation '{operation:?}'.\n Message from Controls: {controls_alarm:?}"
                 );
                 return OutboundSyncResult::Skipped {
-                    reason: crate::models::SkipReason::MissingTopic,
+                    reason: SkipReason::MissingTopic,
                 };
             }
         };
@@ -137,7 +120,7 @@ impl<P: Publisher> SyncImpl<P> {
                     "Unable to create message to send to Phoebus.\n Cause: {err}\n Message from Controls: {controls_alarm:?}"
                 );
                 return OutboundSyncResult::Skipped {
-                    reason: crate::models::SkipReason::MalformedMessage,
+                    reason: SkipReason::MalformedMessage,
                 };
             }
         };
@@ -159,47 +142,46 @@ impl<P: Publisher> SyncImpl<P> {
                     controls_alarm.device
                 );
                 OutboundSyncResult::Skipped {
-                    reason: crate::models::SkipReason::MissingPublisher,
+                    reason: SkipReason::MissingPublisher,
                 }
             }
         }
     }
 
-    /// The general steps for processing an EPICS device with updated state.
-    async fn process_epics_message(
+    /// The general steps for processing a device with updated state.
+    async fn process_controls_message(
         &self,
-        controls_alarm: &Status,
-        observed_state_policy: &ControlsObservedStatePolicy,
+        controls_alarm: Status,
+        previous_observed_state: ObservedStatePolicy,
     ) -> SyncOutcome {
-        match decide_epics_sync(
-            controls_alarm,
+        match decide_controls_sync(
+            &controls_alarm,
+            previous_observed_state,
             self.get_pv_metadata(&controls_alarm.device).await,
         ) {
             ControlsInboundDecision::IgnoreNonSyncState => {
-                self.record_non_sync_controls_state(controls_alarm, observed_state_policy)
-                    .await
+                handle_non_sync_controls_state(&controls_alarm.device, &controls_alarm.state())
             }
             ControlsInboundDecision::OutOfScope => {
                 handle_out_of_scope_decision(&controls_alarm.device)
             }
+            ControlsInboundDecision::SuppressedByPolicy => {
+                handle_suppressed_by_policy(controls_alarm)
+            }
             ControlsInboundDecision::SyncToPhoebus {
                 operation,
                 pv_metadata,
+                updated_state,
             } => {
                 let outbound_result = self
-                    .sync_epics_message_to_phoebus(controls_alarm, operation, &pv_metadata)
+                    .sync_epics_message_to_phoebus(&controls_alarm, operation, &pv_metadata)
                     .await;
 
                 debug!(
                     "Refreshing latest observed Controls state for device {} after outbound result {:?} to preserve duplicate suppression and loop prevention.",
                     controls_alarm.device, outbound_result
                 );
-                record_observed_alarm_state(
-                    &self.alarm_states,
-                    observed_state_policy.device(),
-                    observed_state_policy.recorded_state(),
-                )
-                .await;
+                record_alarm_state(&self.alarm_states, &controls_alarm.device, updated_state).await;
 
                 outbound_result.into_sync_outcome(SyncDirection::ControlsToPhoebus)
             }
@@ -209,29 +191,16 @@ impl<P: Publisher> SyncImpl<P> {
     /// Consumes a [`Message`] and determines whether it carries synchronization-relevant intent for Phoebus.
     async fn process_runtime_message(&self, msg: StringMessage) -> Result<SyncOutcome, ()> {
         let controls_alarm = deserialize_status(&msg)?;
-        let observed_state_policy = self.observed_state_policy(&controls_alarm).await;
-        if observed_state_policy.suppresses_duplicate() {
-            handle_not_stale_cached_value(controls_alarm);
-            return Ok(SyncOutcome::Duplicate);
+        if controls_alarm.source() != Source::Epics {
+            return Ok(handle_acnet_device(
+                &controls_alarm.device,
+                controls_alarm.source(),
+            ));
         }
-        let outcome = if controls_alarm.source() == Source::Epics {
-            self.process_epics_message(&controls_alarm, &observed_state_policy)
-                .await
-        } else {
-            debug!(
-                "Received ACNET device {}. Recording latest observed state for loop prevention and doing nothing.",
-                controls_alarm.device
-            );
-            record_observed_alarm_state(
-                &self.alarm_states,
-                observed_state_policy.device(),
-                observed_state_policy.recorded_state(),
-            )
+        let previous_observed_state = self.get_last_observed_state(&controls_alarm.device).await;
+        let outcome = self
+            .process_controls_message(controls_alarm, previous_observed_state)
             .await;
-            SyncOutcome::Ignored {
-                reason: IgnoreReason::ExternalSource,
-            }
-        };
         Ok(outcome)
     }
 
@@ -250,6 +219,7 @@ impl<P: Publisher> SyncImpl<P> {
 
 #[async_trait::async_trait]
 impl<P: Publisher + Send + Sync, S: Subscriber + Send + Sync> Synchronizer<P, S> for SyncImpl<P> {
+    /// Constructs a [`SyncImpl`] from the provided [`SynchronizerConfig`], initializing Phoebus publishers for each configured topic.
     fn new(config: SynchronizerConfig) -> Self {
         SyncImpl {
             alarm_states: config.alarm_states,
@@ -274,6 +244,7 @@ impl<P: Publisher + Send + Sync, S: Subscriber + Send + Sync> Synchronizer<P, S>
         }
     }
 
+    /// Connects to the Controls Kafka and begins monitoring for alarm updates to mirror into Phoebus.
     async fn synchronize<SNAP: Snapshot>(self) {
         info!("Starting Controls-to-Phoebus Synchronizer");
         loop {
@@ -293,19 +264,39 @@ impl<P: Publisher + Send + Sync, S: Subscriber + Send + Sync> Synchronizer<P, S>
 }
 
 #[async_trait::async_trait]
-impl RuntimeSyncFactory for SyncImpl<rust_pubsub_lib::KafkaPublisher> {
+impl RuntimeSyncFactory for SyncImpl<KafkaPublisher> {
+    /// Constructs a runtime [`SyncImpl`] using the concrete Kafka publisher and subscriber types.
     fn new(config: SynchronizerConfig) -> Self {
-        <Self as Synchronizer<rust_pubsub_lib::KafkaPublisher, rust_pubsub_lib::KafkaSubscriber>>::new(config)
+        <Self as Synchronizer<KafkaPublisher, KafkaSubscriber>>::new(config)
     }
 
+    /// Runs the Controls-to-Phoebus synchronizer with the concrete Kafka runtime types.
     async fn run(self) {
-        <Self as Synchronizer<rust_pubsub_lib::KafkaPublisher, rust_pubsub_lib::KafkaSubscriber>>::synchronize::<rust_pubsub_lib::KafkaSnapshot>(self).await
+        <Self as Synchronizer<KafkaPublisher, KafkaSubscriber>>::synchronize::<KafkaSnapshot>(self)
+            .await
     }
+}
+
+/// Structured decision for how Controls inbound EPICS state should be handled before side effects occur.
+#[derive(Debug)]
+enum ControlsInboundDecision {
+    /// The inbound state is not one that maps to a Phoebus synchronization action (e.g. alarmed, OK).
+    IgnoreNonSyncState,
+    /// The device has no Phoebus metadata, so it is not currently tracked for synchronization.
+    OutOfScope,
+    /// The inbound state matches or is suppressed by the latest observed state for this device.
+    SuppressedByPolicy,
+    /// The inbound state maps to a Phoebus operation and the device is in scope; synchronization should proceed.
+    SyncToPhoebus {
+        operation: Operation,
+        pv_metadata: PvMetadata,
+        updated_state: CachedState,
+    },
 }
 
 /// The logic for transforming the value of the provided [`Message`] into a [`Status`].
 fn deserialize_status(msg: &StringMessage) -> Result<Status, ()> {
-    serde_json::from_str::<Status>(&msg.value()).map_err(|e| {
+    serde_json::from_str(&msg.value()).map_err(|e| {
         error!(
             "Failed to deserialize Controls message value: {e}\n Message value: {}",
             msg.value()
@@ -313,23 +304,18 @@ fn deserialize_status(msg: &StringMessage) -> Result<Status, ()> {
     })
 }
 
-/// Structured decision for how Controls inbound EPICS state should be handled before side effects occur.
-#[derive(Debug)]
-enum ControlsInboundDecision {
-    IgnoreNonSyncState,
-    OutOfScope,
-    SyncToPhoebus {
-        operation: Operation,
-        pv_metadata: PvMetadata,
-    },
-}
-
 /// Decides how an inbound Controls EPICS alarm should be handled before transport or cache side effects occur.
-fn decide_epics_sync(
+fn decide_controls_sync(
     controls_alarm: &Status,
+    previous_observed_state: ObservedStatePolicy,
     pv_metadata: Option<PvMetadata>,
 ) -> ControlsInboundDecision {
-    let operation_opt = transform::state_to_operation(controls_alarm.state());
+    let updated_state = CachedState::from(controls_alarm);
+    if previous_observed_state.suppresses_incoming(&updated_state) {
+        return ControlsInboundDecision::SuppressedByPolicy;
+    }
+
+    let operation_opt = transform::state_to_operation(updated_state.state);
     let operation = match operation_opt {
         Some(operation) => operation,
         None => return ControlsInboundDecision::IgnoreNonSyncState,
@@ -339,25 +325,47 @@ fn decide_epics_sync(
         ControlsInboundDecision::SyncToPhoebus {
             operation,
             pv_metadata,
+            updated_state,
         }
     } else {
         ControlsInboundDecision::OutOfScope
     }
 }
 
+/// Logs a Controls alarm update for an ACNET device and maps it to the public synchronization outcome.
+fn handle_acnet_device(device: &str, source: Source) -> SyncOutcome {
+    debug!("Received Controls alarm update for ACNET device {device} - {source:?}. Ignoring.");
+    SyncOutcome::Ignored {
+        reason: IgnoreReason::ExternalSource,
+    }
+}
+
+/// Logs a Controls update that carries no synchronization-relevant user intent for Phoebus.
+fn handle_non_sync_controls_state(device: &str, state: &State) -> SyncOutcome {
+    debug!(
+        "Received Controls alarm update for device {} with new state {:?} that does not require synchronization.",
+        device, state
+    );
+    SyncOutcome::Ignored {
+        reason: IgnoreReason::StateNoise,
+    }
+}
+
 /// Logs the structured out-of-scope Controls decision and maps it to the public synchronization outcome.
 fn handle_out_of_scope_decision(device: &str) -> SyncOutcome {
-    warn!(
-        "Received message for EPICS device '{device}' with no matching PV metadata. Treating device as out of scope until Phoebus configuration metadata is discovered. Message will be dropped."
+    debug!(
+        "Received message for device '{device}' with no matching PV metadata. Device is not being tracked by Phoebus."
     );
     SyncOutcome::OutOfScope
 }
 
-/// Logs a message that the `controls_alarm` state is already up to date, so no action will be taken.
-fn handle_not_stale_cached_value(controls_alarm: Status) {
+/// Logs a Controls alarm update that was suppressed by the observed-state policy and maps it to the public synchronization outcome.
+fn handle_suppressed_by_policy(controls_alarm: Status) -> SyncOutcome {
     debug!(
-        "Received alarm update for device {} with unchanged state '{:?}'. Treating message as a duplicate of the latest observed state and doing nothing.",
-        controls_alarm.device,
-        controls_alarm.state()
+        "Got stale message for device {} that is suppressed by policy. Message will be dropped.\n Inbound message:\n{:?}",
+        controls_alarm.device, controls_alarm
     );
+    SyncOutcome::Ignored {
+        reason: IgnoreReason::SuppressedByPolicy,
+    }
 }

@@ -15,28 +15,30 @@
 //! it refreshes the synchronizer's local observed cache for duplicate suppression and loop prevention, logs the
 //! external blocker clearly, and intentionally skips unavailable Controls propagation.
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use rust_pubsub_lib::{Message, PubSubError, StringMessage, Subscriber};
+use tokio::time::sleep;
+use tokio_stream::{Stream, StreamExt};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
+
 use crate::models::alarm::status::State;
 use crate::models::metadata::{MetadataScope, build_metadata_from_config};
 use crate::models::phoebus::{
     Command, Config, Key, KeyParseError, Operation, PhoebusParseError, PvMetadata,
 };
 use crate::models::{
-    ACK_COMMAND, AlarmStateCache, CachedState, IgnoreReason, PhoebusObservedStatePolicy,
-    SkipReason, SyncDirection, SyncOutcome, SynchronizerConfig, read_phoebus_observed_state_policy,
-    record_observed_alarm_state,
+    ACK_COMMAND, AlarmStateCache, CachedState, IgnoreReason, ObservedStatePolicy, SkipReason,
+    SyncDirection, SyncOutcome, SynchronizerConfig, read_observed_state_policy, record_alarm_state,
 };
 use crate::phoebus::sync::ControlsClient;
-use rust_pubsub_lib::{Message, PubSubError, StringMessage, Subscriber};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::sleep;
-use tokio_stream::{Stream, StreamExt};
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
 
 #[cfg(test)]
 mod tests;
 
+/// Watches a single Phoebus Kafka topic and forwards relevant messages to the Controls alarm service.
 pub struct Monitor {
     /// The atomic cache of alarm state data.
     alarm_states: AlarmStateCache,
@@ -56,6 +58,7 @@ pub struct Monitor {
     /// The metadata and scope abstraction for PV discovery and lookup.
     metadata_scope: MetadataScope,
 }
+
 impl Monitor {
     /// Generates a [`Monitor`] for the provided topic.
     pub fn new(
@@ -110,25 +113,19 @@ impl Monitor {
     /// The synchronizer can observe that Phoebus considers the alarm active again, but it cannot yet mirror that
     /// transition into Controls because the shared interfaces repository does not currently expose an API for
     /// reporting active/OK alarm state back to Controls.
-    async fn record_active_alarm_local_only(
+    async fn handle_active_alarm(
         &self,
         device: &str,
         updated_state: CachedState,
+        user: &str,
     ) -> SyncOutcome {
-        let policy = read_phoebus_observed_state_policy(&self.alarm_states, device).await;
-        if policy.suppresses_activation_duplicate() {
-            handle_already_active(device);
-            return SyncOutcome::Duplicate;
-        }
-
-        warn!(
-            "Observed Phoebus config re-activate device '{}', but the synchronizer cannot mirror active/OK state back to Controls yet because the shared interfaces repository does not expose the required upstream API. Refreshing local observed cache only until that capability exists.",
-            device
+        let outbound_result = self.controls_client.activate_alarm(device, user).await;
+        debug!(
+            "Refreshing latest observed Phoebus activation state for device {} after outbound result {:?} to preserve duplicate suppression and loop prevention.",
+            device, outbound_result
         );
-        record_observed_alarm_state(&self.alarm_states, device, updated_state).await;
-        SyncOutcome::Skipped {
-            reason: SkipReason::UnsupportedCapability,
-        }
+        record_alarm_state(&self.alarm_states, device, updated_state).await;
+        outbound_result.into_sync_outcome(SyncDirection::PhoebusToControls)
     }
 
     /// Handles when a config came in from Phoebus to bypass an active alarm.
@@ -138,15 +135,6 @@ impl Monitor {
         updated_state: CachedState,
         user: &str,
     ) -> SyncOutcome {
-        let policy = read_phoebus_observed_state_policy(&self.alarm_states, device).await;
-        if policy.suppresses_bypass_duplicate(&updated_state) {
-            info!(
-                "Received configuration update from Phoebus to bypass alarm for device '{}', but it is already bypassed. Updating cached PV config only.",
-                device
-            );
-            return SyncOutcome::Duplicate;
-        }
-
         let outbound_result = match updated_state.wake {
             Some(time) => self.controls_client.snooze_alarm(device, user, time).await,
             None => self.controls_client.bypass_alarm(device, user).await,
@@ -156,15 +144,14 @@ impl Monitor {
             "Refreshing latest observed Phoebus bypass state for device {} after outbound result {:?} to preserve duplicate suppression and loop prevention.",
             device, outbound_result
         );
-        record_observed_alarm_state(&self.alarm_states, device, updated_state).await;
+        record_alarm_state(&self.alarm_states, device, updated_state).await;
 
         outbound_result.into_sync_outcome(SyncDirection::PhoebusToControls)
     }
 
     /// Handles a Command message coming in from Phoebus.
     async fn process_command(&self, key: Key, msg_text: String) -> SyncOutcome {
-        let observed_policy =
-            read_phoebus_observed_state_policy(&self.alarm_states, &key.device).await;
+        let observed_policy = read_observed_state_policy(&self.alarm_states, &key.device).await;
         let decision = match decide_phoebus_command(&msg_text, &observed_policy) {
             Ok(decision) => decision,
             Err(_) => return log_parse_error("command", &key, &msg_text),
@@ -179,14 +166,19 @@ impl Monitor {
                     reason: IgnoreReason::StateNoise,
                 }
             }
-            PhoebusCommandDecision::DuplicateAcknowledgement => {
+            PhoebusCommandDecision::SuppressedByPolicy => {
                 info!(
-                    "Received acknowledgement command from Phoebus for device '{}', but it is already acknowledged. Doing nothing.",
+                    "Received acknowledgement command from Phoebus for device '{}', but the device is not eligible for acknowledgement. Doing nothing.",
                     key.device
                 );
-                SyncOutcome::Duplicate
+                SyncOutcome::Ignored {
+                    reason: IgnoreReason::SuppressedByPolicy,
+                }
             }
-            PhoebusCommandDecision::Acknowledge { user } => {
+            PhoebusCommandDecision::Acknowledge {
+                user,
+                updated_state,
+            } => {
                 let outbound_result = self
                     .controls_client
                     .acknowledge_alarm(&key.device, &user)
@@ -196,15 +188,7 @@ impl Monitor {
                     "Refreshing latest observed Phoebus acknowledgement state for device {} after outbound result {:?} to preserve duplicate suppression and loop prevention.",
                     key.device, outbound_result
                 );
-                record_observed_alarm_state(
-                    &self.alarm_states,
-                    &key.device,
-                    CachedState {
-                        state: State::Acknowledged,
-                        wake: None,
-                    },
-                )
-                .await;
+                record_alarm_state(&self.alarm_states, &key.device, updated_state).await;
 
                 outbound_result.into_sync_outcome(SyncDirection::PhoebusToControls)
             }
@@ -213,39 +197,43 @@ impl Monitor {
 
     /// Handles a message from Phoebus that updates the configuration of a PV.
     async fn process_config(&self, key: Key, msg_text: String) -> SyncOutcome {
+        let config = match serde_json::from_str(&msg_text) {
+            Ok(c) => c,
+            Err(_) => {
+                return log_parse_error("config", &key, &msg_text);
+            }
+        };
         let cached_metadata = self.get_pv_metadata(&key).await;
-        let decision = match decide_phoebus_config(&msg_text, &cached_metadata.config) {
+        let last_observed_state = read_observed_state_policy(&self.alarm_states, &key.device).await;
+        let decision = match decide_phoebus_config(&config, &cached_metadata, &last_observed_state)
+        {
             Ok(decision) => decision,
             Err(_) => return log_parse_error("config", &key, &msg_text),
         };
 
-        let outcome = match &decision.decision_flag {
-            PhoebusConfigDecisionFlag::DuplicateConfig => {
+        let outcome = match decision {
+            PhoebusConfigDecision::DuplicateConfig => {
                 info!(
                     "Received config from Phoebus for device '{}' that matches the cached config. Doing nothing.",
                     key.device
                 );
-                SyncOutcome::Duplicate
+                return SyncOutcome::Duplicate;
             }
-            PhoebusConfigDecisionFlag::NoEnablementChange => SyncOutcome::Ignored {
+            PhoebusConfigDecision::NoEnablementChange => SyncOutcome::Ignored {
                 reason: IgnoreReason::StateNoise,
             },
-            PhoebusConfigDecisionFlag::BypassOrSnooze { updated_state } => {
-                self.handle_bypassed_alarm(
-                    &key.device,
-                    updated_state.clone(),
-                    &decision.config.user,
-                )
-                .await
+            PhoebusConfigDecision::BypassOrSnooze { updated_state } => {
+                self.handle_bypassed_alarm(&key.device, updated_state, &config.user)
+                    .await
             }
-            PhoebusConfigDecisionFlag::RecordActiveLocally { updated_state } => {
-                self.record_active_alarm_local_only(&key.device, updated_state.clone())
+            PhoebusConfigDecision::RecordActive { updated_state } => {
+                self.handle_active_alarm(&key.device, updated_state, &config.user)
                     .await
             }
         };
 
         let new_metadata = PvMetadata {
-            config: decision.config,
+            phoebus_config_metadata: config.phoebus_specific,
             ..cached_metadata
         };
         self.metadata_scope
@@ -262,7 +250,7 @@ impl Monitor {
             let key = match Key::parse(&key_str) {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    let outcome = log_monitor_key_parse_outcome(&key_str, &value, &error);
+                    let outcome = log_key_parse_outcome(&key_str, &value, &error);
                     debug!("Phoebus monitor outcome: {outcome:?}");
                     return;
                 }
@@ -305,17 +293,20 @@ impl Monitor {
 }
 
 /// Structured decision for how an inbound Phoebus command should be handled before side effects occur.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum PhoebusCommandDecision {
     IgnoreUnsupportedCommand,
-    DuplicateAcknowledgement,
-    Acknowledge { user: String },
+    SuppressedByPolicy,
+    Acknowledge {
+        user: String,
+        updated_state: CachedState,
+    },
 }
 
 /// Decides how an inbound Phoebus command should be handled before transport or cache side effects occur.
 fn decide_phoebus_command(
     msg_text: &str,
-    observed_policy: &PhoebusObservedStatePolicy,
+    observed_policy: &ObservedStatePolicy,
 ) -> Result<PhoebusCommandDecision, PhoebusParseError> {
     let command_msg = serde_json::from_str::<Command>(msg_text)
         .map_err(|_| PhoebusParseError::MalformedMessage)?;
@@ -324,63 +315,48 @@ fn decide_phoebus_command(
         return Ok(PhoebusCommandDecision::IgnoreUnsupportedCommand);
     }
 
-    if observed_policy.suppresses_acknowledgement_duplicate() {
-        return Ok(PhoebusCommandDecision::DuplicateAcknowledgement);
+    let updated_state = CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    };
+
+    if observed_policy.suppresses_incoming(&updated_state) {
+        return Ok(PhoebusCommandDecision::SuppressedByPolicy);
     }
 
     Ok(PhoebusCommandDecision::Acknowledge {
         user: command_msg.user,
+        updated_state,
     })
-}
-
-#[derive(Debug, PartialEq)]
-enum PhoebusConfigDecisionFlag {
-    DuplicateConfig,
-    NoEnablementChange,
-    BypassOrSnooze { updated_state: CachedState },
-    RecordActiveLocally { updated_state: CachedState },
 }
 
 /// Structured decision for how an inbound Phoebus config should be handled before side effects occur.
 #[derive(Debug, PartialEq)]
-struct PhoebusConfigDecision {
-    decision_flag: PhoebusConfigDecisionFlag,
-    config: Config,
+enum PhoebusConfigDecision {
+    DuplicateConfig,
+    NoEnablementChange,
+    BypassOrSnooze { updated_state: CachedState },
+    RecordActive { updated_state: CachedState },
 }
 
 /// Decides how an inbound Phoebus config should be handled before transport or cache side effects occur.
 fn decide_phoebus_config(
-    msg_text: &str,
-    cached_config: &Config,
+    config: &Config,
+    cached_metadata: &PvMetadata,
+    last_observed_state: &ObservedStatePolicy,
 ) -> Result<PhoebusConfigDecision, PhoebusParseError> {
-    let config = serde_json::from_str::<Config>(msg_text)
-        .map_err(|_| PhoebusParseError::MalformedMessage)?;
-
-    if config == *cached_config {
-        return Ok(PhoebusConfigDecision {
-            decision_flag: PhoebusConfigDecisionFlag::DuplicateConfig,
-            config,
-        });
-    }
-
-    if config.enabled == cached_config.enabled {
-        return Ok(PhoebusConfigDecision {
-            decision_flag: PhoebusConfigDecisionFlag::NoEnablementChange,
-            config,
-        });
-    }
-
     let updated_state = config.as_cached_state()?;
+    if last_observed_state.suppresses_incoming(&updated_state) {
+        if config.phoebus_specific == cached_metadata.phoebus_config_metadata {
+            return Ok(PhoebusConfigDecision::DuplicateConfig);
+        }
+        return Ok(PhoebusConfigDecision::NoEnablementChange);
+    }
+
     match updated_state.state {
-        State::Bypassed => Ok(PhoebusConfigDecision {
-            decision_flag: PhoebusConfigDecisionFlag::BypassOrSnooze { updated_state },
-            config,
-        }),
-        State::Ok => Ok(PhoebusConfigDecision {
-            decision_flag: PhoebusConfigDecisionFlag::RecordActiveLocally { updated_state },
-            config,
-        }),
-        _ => Err(PhoebusParseError::MalformedMessage),
+        State::Bypassed => Ok(PhoebusConfigDecision::BypassOrSnooze { updated_state }),
+        State::Unbypassed => Ok(PhoebusConfigDecision::RecordActive { updated_state }),
+        _ => Err(PhoebusParseError::UnexpectedState),
     }
 }
 
@@ -394,13 +370,6 @@ fn log_parse_error(operation: &str, key: &Key, msg_text: &str) -> SyncOutcome {
     }
 }
 
-/// Handles when a message comes in to activate a device that was already thought to be active.
-fn handle_already_active(device: &str) {
-    info!(
-        "Received configuration update from Phoebus to activate alarm for device '{device}', but it is already active. Updating cached config only."
-    );
-}
-
 /// Handles when a message is not a command or a config.
 fn process_other(key: Key, msg_text: String) -> SyncOutcome {
     debug!(
@@ -411,7 +380,7 @@ fn process_other(key: Key, msg_text: String) -> SyncOutcome {
     }
 }
 
-fn log_monitor_key_parse_outcome(key: &str, value: &str, error: &KeyParseError) -> SyncOutcome {
+fn log_key_parse_outcome(key: &str, value: &str, error: &KeyParseError) -> SyncOutcome {
     match error {
         KeyParseError::UnsupportedOperation => {
             debug!(

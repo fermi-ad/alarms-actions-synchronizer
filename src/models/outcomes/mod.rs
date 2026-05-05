@@ -36,17 +36,21 @@ pub enum SyncOutcome {
 /// The direction in which synchronization was attempted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncDirection {
+    /// Synchronization was attempted from the Controls alarm system toward Phoebus.
     ControlsToPhoebus,
+    /// Synchronization was attempted from Phoebus toward the Controls alarm system.
     PhoebusToControls,
 }
 
 /// Why an inbound message was ignored without any synchronization attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IgnoreReason {
-    /// The device belongs to a non-EPICS source and is outside this synchronizer's mission.
+    /// The message originated from a non-EPICS source (e.g. ACNET) that is not tracked by this service.
     ExternalSource,
     /// The message represents state change that is not tracked by this service.
     StateNoise,
+    /// The message was suppressed by the observed-state policy (duplicate or forbidden transition).
+    SuppressedByPolicy,
 }
 
 /// Why a synchronization-relevant action was skipped.
@@ -56,8 +60,6 @@ pub enum SkipReason {
     MissingTopic,
     /// No publisher/client capability existed for the resolved destination.
     MissingPublisher,
-    /// An upstream API or feature is intentionally unavailable in this repository.
-    UnsupportedCapability,
     /// Input was malformed for the expected message class.
     MalformedMessage,
 }
@@ -65,7 +67,9 @@ pub enum SkipReason {
 /// Result of attempting synchronization work.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AttemptResult {
+    /// The outbound transport reported that the synchronization update was delivered successfully.
     Succeeded,
+    /// The outbound transport reported that the synchronization update failed to deliver.
     Failed,
 }
 

@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::models::alarm::status::{Source, State};
-use crate::models::cache::read_observed_alarm_state;
+use crate::models::cache::read_observed_state_policy;
 use crate::models::generated::Timestamp;
 
 #[test]
@@ -25,7 +25,7 @@ fn should_get_cached_state_from_alarm_status() {
         wake: None,
     };
 
-    let result = CachedState::from(status);
+    let result = CachedState::from(&status);
     assert_eq!(result.state, alarm::status::State::Acknowledged);
     assert_eq!(result.wake, None);
 }
@@ -44,62 +44,95 @@ fn should_match_observed_alarm_state_against_controls_status_by_state_and_wake()
         ..alarm::Status::default()
     };
 
-    let observed_state = CachedState::from_status(&status);
+    let observed_state = CachedState::from(&status);
 
-    assert!(observed_state.matches(&status.clone().into()));
-    assert!(!observed_state.matches(&CachedState {
-        state: State::Bypassed,
-        wake: None,
-    }));
+    assert_eq!(observed_state, CachedState::from(&status));
+    assert_ne!(
+        observed_state,
+        CachedState {
+            state: State::Bypassed,
+            wake: None,
+        }
+    );
 }
 
 #[test]
 fn should_build_acknowledged_observed_state_for_command_policy() {
-    // PhoebusObservedStatePolicy::acknowledged() represents the acknowledged state
-    // used for duplicate suppression of acknowledgement commands.
-    let policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+    // An ObservedStatePolicy with an acknowledged cached state suppresses an incoming
+    // acknowledged state (exact match → duplicate suppression).
+    let policy = ObservedStatePolicy::new(Some(CachedState {
         state: State::Acknowledged,
         wake: None,
     }));
-    assert!(policy.suppresses_acknowledgement_duplicate());
+    let incoming_ack = CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    };
+    assert!(policy.suppresses_incoming(&incoming_ack));
 }
 
 #[test]
 fn should_treat_acknowledged_observed_state_as_duplicate_for_command_policy() {
-    let acked = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+    // An already-acknowledged observed state suppresses a new incoming acknowledgement.
+    let acked = ObservedStatePolicy::new(Some(CachedState {
         state: State::Acknowledged,
         wake: None,
     }));
-    assert!(acked.suppresses_acknowledgement_duplicate());
+    assert!(acked.suppresses_incoming(&CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    }));
 
-    let ok_policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+    // An Ok observed state does not suppress an incoming acknowledgement.
+    let ok_policy = ObservedStatePolicy::new(Some(CachedState {
         state: State::Ok,
         wake: None,
     }));
-    assert!(!ok_policy.suppresses_acknowledgement_duplicate());
+    assert!(!ok_policy.suppresses_incoming(&CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    }));
 
-    let bypassed_policy =
-        PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState::bypassed()));
-    assert!(!bypassed_policy.suppresses_acknowledgement_duplicate());
+    // A Bypassed observed state suppresses an incoming Acknowledged state because
+    // transitioning from Bypassed to Acknowledged is forbidden by policy (only Bypassed
+    // and Unbypassed transitions are allowed out of Bypassed).
+    let bypassed_policy = ObservedStatePolicy::new(Some(CachedState::bypassed()));
+    assert!(bypassed_policy.suppresses_incoming(&CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    }));
 }
 
 #[test]
-fn should_treat_any_non_bypassed_observed_state_as_effectively_active_for_config_policy() {
-    let acked = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+fn should_treat_bypassed_observed_state_as_the_only_state_that_allows_unbypassed_transition() {
+    // Only a Bypassed observed state allows an incoming Unbypassed (active) transition.
+    // Non-bypassed states (Ok, Acknowledged) do NOT suppress Unbypassed because they are
+    // not equal to Unbypassed and is_transition_forbidden only applies when observed is Bypassed.
+    let acked = ObservedStatePolicy::new(Some(CachedState {
         state: State::Acknowledged,
         wake: None,
     }));
-    assert!(acked.suppresses_activation_duplicate());
+    assert!(!acked.suppresses_incoming(&CachedState {
+        state: State::Unbypassed,
+        wake: None,
+    }));
 
-    let ok_policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+    let ok_policy = ObservedStatePolicy::new(Some(CachedState {
         state: State::Ok,
         wake: None,
     }));
-    assert!(ok_policy.suppresses_activation_duplicate());
+    assert!(!ok_policy.suppresses_incoming(&CachedState {
+        state: State::Unbypassed,
+        wake: None,
+    }));
 
-    let bypassed_policy =
-        PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState::bypassed()));
-    assert!(!bypassed_policy.suppresses_activation_duplicate());
+    // A Bypassed observed state does NOT suppress an incoming Unbypassed state
+    // (Unbypassed is an explicitly allowed transition out of Bypassed).
+    let bypassed_policy = ObservedStatePolicy::new(Some(CachedState::bypassed()));
+    assert!(!bypassed_policy.suppresses_incoming(&CachedState {
+        state: State::Unbypassed,
+        wake: None,
+    }));
 }
 
 #[test]
@@ -108,9 +141,12 @@ fn should_define_phoebus_acknowledgement_policy_duplicate_and_recorded_state() {
         state: State::Acknowledged,
         wake: None,
     });
-    let policy = PhoebusObservedStatePolicy::from_cache_entry(cached_entry);
+    let policy = ObservedStatePolicy::new(cached_entry);
 
-    assert!(policy.suppresses_acknowledgement_duplicate());
+    assert!(policy.suppresses_incoming(&CachedState {
+        state: State::Acknowledged,
+        wake: None,
+    }));
 }
 
 #[test]
@@ -119,16 +155,16 @@ fn should_define_phoebus_bypass_duplicate_by_exact_cached_state() {
         seconds: 555,
         nanos: 1,
     });
-    let policy = PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+    let policy = ObservedStatePolicy::new(Some(CachedState {
         state: State::Bypassed,
         wake: wake.clone(),
     }));
 
-    assert!(policy.suppresses_bypass_duplicate(&CachedState {
+    assert!(policy.suppresses_incoming(&CachedState {
         state: State::Bypassed,
         wake: wake.clone(),
     }));
-    assert!(!policy.suppresses_bypass_duplicate(&CachedState {
+    assert!(!policy.suppresses_incoming(&CachedState {
         state: State::Bypassed,
         wake: None,
     }));
@@ -136,25 +172,45 @@ fn should_define_phoebus_bypass_duplicate_by_exact_cached_state() {
 
 #[test]
 fn should_preserve_active_state_asymmetry_in_phoebus_config_policy() {
+    // Non-bypassed states (Ok, Acknowledged) do NOT suppress an incoming Unbypassed state
+    // because they are not equal to Unbypassed and is_transition_forbidden only applies
+    // when the observed state is Bypassed.
     assert!(
-        PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+        !ObservedStatePolicy::new(Some(CachedState {
             state: State::Ok,
             wake: None,
         },))
-        .suppresses_activation_duplicate()
+        .suppresses_incoming(&CachedState {
+            state: State::Unbypassed,
+            wake: None,
+        })
     );
     assert!(
-        PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState {
+        !ObservedStatePolicy::new(Some(CachedState {
             state: State::Acknowledged,
             wake: None,
         }))
-        .suppresses_activation_duplicate()
+        .suppresses_incoming(&CachedState {
+            state: State::Unbypassed,
+            wake: None,
+        })
     );
+    // Bypassed observed state does NOT suppress Unbypassed (explicitly allowed transition).
     assert!(
-        !PhoebusObservedStatePolicy::from_cache_entry(Some(CachedState::bypassed(),))
-            .suppresses_activation_duplicate()
+        !ObservedStatePolicy::new(Some(CachedState::bypassed(),)).suppresses_incoming(
+            &CachedState {
+                state: State::Unbypassed,
+                wake: None,
+            }
+        )
     );
-    assert!(!PhoebusObservedStatePolicy::from_cache_entry(None).suppresses_activation_duplicate());
+    // No observed state means nothing is suppressed.
+    assert!(
+        !ObservedStatePolicy::new(None).suppresses_incoming(&CachedState {
+            state: State::Unbypassed,
+            wake: None,
+        })
+    );
 }
 
 #[test]
@@ -171,25 +227,19 @@ fn should_define_controls_duplicate_policy_by_exact_cached_state() {
         ..alarm::Status::default()
     };
 
-    let policy = ControlsObservedStatePolicy::from_status(
-        &status,
-        Some(CachedState {
-            state: State::Bypassed,
-            wake: wake.clone(),
-        }),
-    );
+    let incoming = CachedState::from(&status);
 
-    assert!(policy.suppresses_duplicate());
-    assert!(
-        !ControlsObservedStatePolicy::from_status(
-            &status,
-            Some(CachedState {
-                state: State::Bypassed,
-                wake: None,
-            }),
-        )
-        .suppresses_duplicate()
-    );
+    let policy_matching = ObservedStatePolicy::new(Some(CachedState {
+        state: State::Bypassed,
+        wake: wake.clone(),
+    }));
+    assert!(policy_matching.suppresses_incoming(&incoming));
+
+    let policy_different_wake = ObservedStatePolicy::new(Some(CachedState {
+        state: State::Bypassed,
+        wake: None,
+    }));
+    assert!(!policy_different_wake.suppresses_incoming(&incoming));
 }
 
 #[test]
@@ -202,16 +252,9 @@ fn should_define_controls_recorded_state_as_latest_incoming_observation() {
         ..alarm::Status::default()
     };
 
-    let policy = ControlsObservedStatePolicy::from_status(
-        &status,
-        Some(CachedState {
-            state: State::Ok,
-            wake: None,
-        }),
-    );
-
-    assert_eq!(policy.device(), "device");
-    assert_eq!(policy.recorded_state(), CachedState::from_status(&status));
+    let incoming = CachedState::from(&status);
+    assert_eq!(incoming.state, State::Acknowledged);
+    assert_eq!(incoming.wake, None);
 }
 
 #[tokio::test]
@@ -224,16 +267,16 @@ async fn should_read_phoebus_observed_state_policy_from_latest_cache_entry() {
         },
     )])));
 
-    let policy = read_phoebus_observed_state_policy(&cache, "device").await;
+    let policy = read_observed_state_policy(&cache, "device").await;
 
-    assert!(policy.suppresses_bypass_duplicate(&CachedState::bypassed()));
+    assert!(policy.suppresses_incoming(&CachedState::bypassed()));
 }
 
 #[tokio::test]
 async fn should_record_phoebus_observed_state_from_policy_recorded_state() {
     let cache = Arc::new(RwLock::new(HashMap::new()));
 
-    record_observed_alarm_state(
+    record_alarm_state(
         &cache,
         "device",
         CachedState {
@@ -244,7 +287,7 @@ async fn should_record_phoebus_observed_state_from_policy_recorded_state() {
     .await;
 
     assert_eq!(
-        read_observed_alarm_state(&cache, "device").await,
+        cache.read().await.get("device").cloned(),
         Some(CachedState {
             state: State::Acknowledged,
             wake: None,
