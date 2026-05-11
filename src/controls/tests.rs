@@ -307,7 +307,7 @@ async fn should_read_controls_policy_duplicate_only_for_exact_match() {
         device: String::from("device"),
         source: Source::Epics.into(),
         state: State::Bypassed.into(),
-        wake: wake.clone(),
+        wake,
         ..Status::default()
     };
 

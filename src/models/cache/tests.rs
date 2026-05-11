@@ -40,7 +40,7 @@ async fn should_preserve_snoozed_entry_when_state_record_conflicts() {
     };
     let snoozed = CachedState {
         state: State::Bypassed,
-        wake: Some(snooze_wake.clone()),
+        wake: Some(snooze_wake),
     };
     cache
         .write()
@@ -186,12 +186,12 @@ fn should_define_phoebus_bypass_duplicate_by_exact_cached_state() {
     });
     let policy = ObservedStatePolicy::new(Some(CachedState {
         state: State::Bypassed,
-        wake: wake.clone(),
+        wake,
     }));
 
     assert!(policy.suppresses_incoming(&CachedState {
         state: State::Bypassed,
-        wake: wake.clone(),
+        wake,
     }));
     assert!(!policy.suppresses_incoming(&CachedState {
         state: State::Bypassed,
@@ -252,7 +252,7 @@ fn should_define_controls_duplicate_policy_by_exact_cached_state() {
         device: String::from("device"),
         source: Source::Epics as i32,
         state: State::Bypassed as i32,
-        wake: wake.clone(),
+        wake,
         ..Status::default()
     };
 
@@ -260,7 +260,7 @@ fn should_define_controls_duplicate_policy_by_exact_cached_state() {
 
     let policy_matching = ObservedStatePolicy::new(Some(CachedState {
         state: State::Bypassed,
-        wake: wake.clone(),
+        wake,
     }));
     assert!(policy_matching.suppresses_incoming(&incoming));
 
