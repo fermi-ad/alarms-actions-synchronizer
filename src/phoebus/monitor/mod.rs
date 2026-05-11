@@ -28,9 +28,8 @@ use crate::models::alarm::status::State;
 use crate::models::metadata::MetadataScope;
 use crate::models::phoebus::{Command, Config, Key, Operation, PhoebusParseError, PvMetadata};
 use crate::models::{
-    ACK_COMMAND, AlarmStateCache, CachedState, IgnoreReason, ObservedStatePolicy,
-    OutboundSyncResult, SkipReason, SyncDirection, SyncOutcome, SynchronizerConfig,
-    read_observed_state_policy, record_alarm_state,
+    ACK_COMMAND, AlarmStateCache, CachedState, IgnoreReason, ObservedStatePolicy, SkipReason,
+    SyncDirection, SyncOutcome, SynchronizerConfig, read_observed_state_policy, record_alarm_state,
 };
 use crate::phoebus::map_key_parse_error;
 use crate::phoebus::sync::ControlsClient;
@@ -108,17 +107,6 @@ impl Monitor {
             .unwrap_or_else(|| PvMetadata::from_unmapped(key, &self.topic))
     }
 
-    /// Records the latest observed state for a device and returns the result of the sync operation.
-    async fn apply_outbound_and_record(
-        &self,
-        outbound_result: OutboundSyncResult,
-        device: &str,
-        updated_state: CachedState,
-    ) -> SyncOutcome {
-        record_alarm_state(&self.alarm_states, device, updated_state).await;
-        outbound_result.into_sync_outcome(SyncDirection::PhoebusToControls)
-    }
-
     /// Handles a Command message coming in from Phoebus.
     async fn process_command(&self, key: Key, msg_text: String) -> SyncOutcome {
         let observed_policy = read_observed_state_policy(&self.alarm_states, &key.device).await;
@@ -153,8 +141,8 @@ impl Monitor {
                     .controls_client
                     .acknowledge_alarm(&key.device, &user)
                     .await;
-                self.apply_outbound_and_record(outbound_result, &key.device, updated_state)
-                    .await
+                record_alarm_state(&self.alarm_states, &key.device, updated_state).await;
+                outbound_result.into_sync_outcome(SyncDirection::PhoebusToControls)
             }
         }
     }
@@ -191,16 +179,16 @@ impl Monitor {
                     .controls_client
                     .bypass_alarm(&key.device, &config.user)
                     .await;
-                self.apply_outbound_and_record(outbound_result, &key.device, updated_state)
-                    .await
+                record_alarm_state(&self.alarm_states, &key.device, updated_state).await;
+                outbound_result.into_sync_outcome(SyncDirection::PhoebusToControls)
             }
             PhoebusConfigDecision::Activate { updated_state } => {
                 let outbound_result = self
                     .controls_client
                     .activate_alarm(&key.device, &config.user)
                     .await;
-                self.apply_outbound_and_record(outbound_result, &key.device, updated_state)
-                    .await
+                record_alarm_state(&self.alarm_states, &key.device, updated_state).await;
+                outbound_result.into_sync_outcome(SyncDirection::PhoebusToControls)
             }
             PhoebusConfigDecision::Snooze { updated_state } => {
                 let outbound_result = self
@@ -211,8 +199,8 @@ impl Monitor {
                         updated_state.wake.as_ref().copied().unwrap(),
                     )
                     .await;
-                self.apply_outbound_and_record(outbound_result, &key.device, updated_state)
-                    .await
+                record_alarm_state(&self.alarm_states, &key.device, updated_state).await;
+                outbound_result.into_sync_outcome(SyncDirection::PhoebusToControls)
             }
         };
 
