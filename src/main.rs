@@ -2,19 +2,18 @@
 //!
 //! An app to synchronize the user actions between the Controls and Phoebus alarms servers.
 
-use models::{Synchronizer, SynchronizerConfig};
 use rust_env_var_lib::env_var;
-use rust_pubsub_lib::{
-    Publisher, Snapshot, Subscriber,
-    kafka_impl::{KafkaPublisher, KafkaSnapshot, KafkaSubscriber},
-};
-use tokio::{
-    signal,
-    task::{JoinError, JoinHandle},
-    try_join,
-};
+use rust_pubsub_lib::KafkaPublisher;
+use tokio::signal;
+use tokio::task::{JoinError, JoinHandle};
+use tokio::try_join;
 use tokio_util::sync::CancellationToken;
-use tracing_subscriber::{Registry, filter::EnvFilter, fmt::layer, layer::SubscriberExt};
+use tracing_subscriber::Registry;
+use tracing_subscriber::filter::EnvFilter;
+use tracing_subscriber::fmt::layer;
+use tracing_subscriber::layer::SubscriberExt;
+
+use models::{ConfigLoadError, LoggingInitError, RuntimeSyncFactory, SynchronizerConfig};
 
 mod controls;
 mod models;
@@ -27,9 +26,9 @@ mod tests;
 /// The entrypoint into the application, this method sets everything in motion.
 #[tokio::main]
 async fn main() -> Result<(), JoinError> {
-    setup_logging();
+    setup_logging().expect("Failed to set up logger");
 
-    let sync_config = create_synchronizer_config();
+    let sync_config = create_synchronizer_config().expect("Failed to load configuration");
 
     spawn_cancel_listener(sync_config.cancel_token.clone());
 
@@ -40,26 +39,35 @@ async fn main() -> Result<(), JoinError> {
 
 /// Generates an instance of [`SynchronizerConfig`] from the environment variables.
 ///
-/// # Panics
-/// Ends the process if any of the variables are not set.
-fn create_synchronizer_config() -> SynchronizerConfig {
-    let controls_host = env_var::expect("CONTROLS_HOST");
-    let controls_topic = env_var::expect("CONTROLS_TOPIC");
-    let grpc_alarms_svc_host = env_var::expect("GRPC_ALARMS_SERVICE_HOST");
-    let phoebus_host = env_var::expect("PHOEBUS_HOST");
-    let phoebus_topics = env_var::expect::<String>("PHOEBUS_TOPICS")
+/// Returns a [`ConfigLoadError`] if any required variable is not set.
+fn create_synchronizer_config() -> Result<SynchronizerConfig, ConfigLoadError> {
+    let controls_host: String = env_var::get("CONTROLS_HOST")
+        .to_option()
+        .ok_or_else(|| ConfigLoadError::MissingVariable("CONTROLS_HOST".to_string()))?;
+    let controls_topic: String = env_var::get("CONTROLS_TOPIC")
+        .to_option()
+        .ok_or_else(|| ConfigLoadError::MissingVariable("CONTROLS_TOPIC".to_string()))?;
+    let grpc_alarms_svc_host: String = env_var::get("GRPC_ALARMS_SERVICE_HOST")
+        .to_option()
+        .ok_or_else(|| ConfigLoadError::MissingVariable("GRPC_ALARMS_SERVICE_HOST".to_string()))?;
+    let phoebus_host: String = env_var::get("PHOEBUS_HOST")
+        .to_option()
+        .ok_or_else(|| ConfigLoadError::MissingVariable("PHOEBUS_HOST".to_string()))?;
+    let phoebus_topics: Vec<String> = env_var::get("PHOEBUS_TOPICS")
+        .to_option::<String>()
+        .ok_or_else(|| ConfigLoadError::MissingVariable("PHOEBUS_TOPICS".to_string()))?
         .split(',')
         .map(|s| s.trim().to_string())
         .collect();
 
-    SynchronizerConfig::new(
+    Ok(SynchronizerConfig::new(
         CancellationToken::new(),
         controls_host,
         controls_topic,
         grpc_alarms_svc_host,
         phoebus_host,
         phoebus_topics,
-    )
+    ))
 }
 
 fn spawn_cancel_listener(cancel_token: CancellationToken) {
@@ -71,35 +79,34 @@ fn spawn_cancel_listener(cancel_token: CancellationToken) {
     });
 }
 
-/// Convenience method for kicking off the Controls-to-Phoebus synchronizer
+/// Convenience method for kicking off the Controls-to-Phoebus synchronizer.
 fn begin_controls_sync(sync_config: SynchronizerConfig) -> JoinHandle<()> {
-    begin_sync::<KafkaPublisher, KafkaSnapshot, KafkaSubscriber, controls::SyncImpl<KafkaPublisher>>(
-        sync_config,
-    )
+    begin_sync::<controls::SyncImpl<KafkaPublisher>>(sync_config)
 }
 
-/// Convenience method for kicking off the Phoebus-to-Controls synchronizer
+/// Convenience method for kicking off the Phoebus-to-Controls synchronizer.
 fn begin_phoebus_sync(sync_config: SynchronizerConfig) -> JoinHandle<()> {
-    begin_sync::<KafkaPublisher, KafkaSnapshot, KafkaSubscriber, phoebus::SyncImpl>(sync_config)
+    begin_sync::<phoebus::SyncImpl>(sync_config)
 }
 
-/// Spawns a new Tokio task containing a running instance of the configured [`Synchronizer`] type.
+/// Spawns a new Tokio task containing a running instance of the configured runtime synchronizer type.
 ///
-/// This allows the sync operations to run concurrently.
-fn begin_sync<P: Publisher, SNAP: Snapshot, S: Subscriber, T: Synchronizer<P, S> + Send + Sync>(
-    sync_config: SynchronizerConfig,
-) -> JoinHandle<()> {
-    tokio::spawn(async {
+/// This keeps the abstraction surface focused on the concrete Kafka runtime used by the application while
+/// still allowing tests to instantiate synchronizers directly through [`Synchronizer`].
+fn begin_sync<T>(sync_config: SynchronizerConfig) -> JoinHandle<()>
+where
+    T: RuntimeSyncFactory + Send + 'static,
+{
+    tokio::spawn(async move {
         let synchronizer = T::new(sync_config);
-        synchronizer.synchronize::<SNAP>().await
+        synchronizer.run().await
     })
 }
 
 /// Initializes the logging framework.
 ///
-/// # Panics
-/// Ends the process if the logger fails to be set.
-fn setup_logging() {
+/// Returns a [`LoggingInitError`] if a global subscriber has already been set.
+fn setup_logging() -> Result<(), LoggingInitError> {
     let fmt_layer = layer()
         .with_target(false)
         .with_file(true)
@@ -108,5 +115,6 @@ fn setup_logging() {
     // at both the application level and for specific crates/modules.
     let level_layer = EnvFilter::from_default_env();
     let subscriber = Registry::default().with(fmt_layer).with(level_layer);
-    tracing::subscriber::set_global_default(subscriber).expect("Failed to set up logger");
+    tracing::subscriber::set_global_default(subscriber)
+        .map_err(|_| LoggingInitError::AlreadyInitialized)
 }

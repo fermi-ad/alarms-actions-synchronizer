@@ -1,25 +1,10 @@
 //! Models Module Tests
 
+use std::sync::Arc;
+
+use tokio_util::sync::CancellationToken;
+
 use super::*;
-
-#[test]
-fn should_get_cached_state_from_alarm_status() {
-    let status = alarm::Status {
-        device: String::new(),
-        source: alarm::status::Source::Analog as i32,
-        state: alarm::status::State::Acknowledged as i32,
-        severity: alarm::status::Severity::High as i32,
-        acknowledgeable: false,
-        time: None,
-        epics_type: String::new(),
-        user: String::new(),
-        wake: None,
-    };
-
-    let result = CachedState::from(status);
-    assert_eq!(result.state, alarm::status::State::Acknowledged);
-    assert_eq!(result.wake, None);
-}
 
 #[test]
 fn should_create_and_clone_sync_config() {
@@ -45,7 +30,6 @@ fn should_create_and_clone_sync_config() {
     assert_eq!(phoebus_host, orig_config.phoebus_host);
     assert_eq!(phoebus_topics, orig_config.phoebus_topics);
     assert_eq!(1, Arc::strong_count(&orig_config.alarm_states));
-    assert_eq!(1, Arc::strong_count(&orig_config.pv_metadata));
 
     let cloned_config = orig_config.clone();
     assert_eq!(orig_config, cloned_config);

@@ -4,20 +4,24 @@
 //! [`TestRunner`] descibes the common flow of a test case: some data appears on a given
 //! Kafka topic and the [`Synchronizer`] under test is expected to respond in a certain way.
 
-use super::*;
-use crate::models::{Synchronizer, SynchronizerConfig};
+use std::marker::PhantomData;
+use std::time::Duration;
+use std::{collections::HashMap, error::Error};
+
 use rust_pubsub_lib::{
-    Message, Publisher,
-    kafka_impl::{KafkaPublisher, KafkaSnapshot, KafkaSubscriber, testing_utils::Harness},
+    KafkaPublisher, KafkaSnapshot, KafkaSubscriber, KafkaTestHarness, Message, Publisher,
+    StringMessage,
 };
-use std::{error::Error, time::Duration};
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
-use uuid::Uuid;
+
+use crate::models::{Synchronizer, SynchronizerConfig, metadata::MetadataScope, phoebus::Config};
 
 /// The topic used in the tests for messages from Controls.
 pub const CONTROLS_TOPIC: &str = "controls";
+
+/// A sentinel device name used by test-only runtime readiness probes.
+const READINESS_DEVICE: &str = "__test_runner_readiness_device__";
 
 /// The topic used in the tests for messages to/from Phoebus.
 pub const PHOEBUS_TOPIC: &str = "phoebus";
@@ -25,15 +29,15 @@ pub const PHOEBUS_TOPIC: &str = "phoebus";
 /// Describes the origin of the [`Message`] that initiates the behavior being tested.
 ///
 /// Used by [`TestRunner`] to choose which topic from the [`SynchronizerConfig`] to send the message on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageOrigin {
     Controls,
     Phoebus,
-    PhoebusCommand,
 }
 
 /// Generates a [`SynchronizerConfig`] instance where the Kafka topics are the default testing
-/// [`CONTROLS_TOPIC`] and [`PHOEBUS_TOPIC`].
-pub fn get_mock_sync_config() -> SynchronizerConfig {
+/// [`CONTROLS_TOPIC`] and [`PHOEBUS_TOPIC`] and all host strings are empty.
+fn get_mock_sync_config() -> SynchronizerConfig {
     SynchronizerConfig::new(
         CancellationToken::new(),
         String::new(),
@@ -44,65 +48,63 @@ pub fn get_mock_sync_config() -> SynchronizerConfig {
     )
 }
 
-/// Generates a [`SynchronizerConfig`] instance where the Kafka topics are the default testing
-/// [`CONTROLS_TOPIC`] and [`PHOEBUS_TOPIC`], but salted with a random hash value.
-///
-/// This ensures the test is run against empty topics, which is useful when specific edge cases are being tested.
-pub fn get_mock_sync_config_salted() -> SynchronizerConfig {
-    let salt = Uuid::new_v4().as_simple().to_string();
-    SynchronizerConfig {
-        controls_topic: format!("{CONTROLS_TOPIC}{salt}"),
-        phoebus_topics: vec![format!("{PHOEBUS_TOPIC}{salt}")],
-        ..get_mock_sync_config()
-    }
-}
-
 /// A helper tool that simulates a [`Synchronizer`] receiving the provided [`Message`] and checks that the expected behavior ensues.
-pub struct TestRunner<T>
+pub struct TestRunner<M, N, T>
 where
+    M: Message<N>,
     T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static,
 {
+    /// The cancellation token used to stop the [`Synchronizer`] under test after the test completes.
     cancel_token: CancellationToken,
-    /// The [`Harness`] containing the location of the test Kafka Cluster via its [`host()`](Harness::host) method.
-    pub harness: Harness,
-    message: Option<Message>,
+    pub test_config: SynchronizerConfig,
+    /// The [`KafkaTestHarness`] containing the location of the test Kafka Cluster via its [`host()`](KafkaTestHarness::host) method.
+    pub harness: KafkaTestHarness,
+    /// The message to send that initiates the behavior being tested.
+    message: Option<M>,
+    /// Phantom marker to carry the message value type `N` without storing a value of that type.
+    _message_type: PhantomData<N>,
+    /// The topic on which the test message will be published.
     send_topic: String,
     /// The [`Synchronizer`] instance being tested.
     pub sync: T,
 }
-impl<T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static> TestRunner<T> {
-    /// Generates a [`TestInstance`] for a [`Synchronizer`] that listens to messages from [`MessageOrigin`].
+
+impl<M: Message<N>, N, T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static>
+    TestRunner<M, N, T>
+{
+    /// Generates a [`TestRunner`] for a [`Synchronizer`] that listens to messages from [`MessageOrigin`].
     ///
     /// A [`Message`] is simulated to be sent on the appropriate topic by calling [`has`](Self::has).
     ///
     /// The results of the test are then determined by calling one of
     /// - [`results_in`](Self::results_in)
     /// - [`after_init_results_in`](Self::after_init_results_in)
-    /// - [`on_init_results_in`](Self::on_init_results_in)
-    pub async fn check_when(origin: MessageOrigin, config_opt: Option<SynchronizerConfig>) -> Self {
-        let mut config = config_opt.unwrap_or_else(get_mock_sync_config);
+    pub async fn check_when(origin: MessageOrigin) -> Self {
+        let mut config = get_mock_sync_config();
 
         let cancel_token = config.cancel_token.clone();
 
-        let (send_topic, all_topics) = prioritize_topics(origin, &config);
+        let harness = KafkaTestHarness::with_topics(Vec::new()).await;
+        rewrite_config_topics_with_harness_topics(&harness, &mut config).await;
+        let send_topic = prioritized_send_topic(origin, &config);
 
-        let harness = Harness::with_topics(all_topics).await;
-
-        config.controls_host = harness.host();
-        config.phoebus_host = harness.host();
-        let sync = T::new(config);
+        config.controls_host = harness.host().await;
+        config.phoebus_host = config.controls_host.clone();
+        let sync = T::new(config.clone());
 
         TestRunner {
             cancel_token,
+            test_config: config,
             harness,
             message: None,
+            _message_type: PhantomData,
             send_topic,
             sync,
         }
     }
 
     /// Supplies the [`Message`] to send that kicks off the test case.
-    pub fn has(mut self, message: Message) -> Self {
+    pub fn has(mut self, message: M) -> Self {
         self.message = Some(message);
         self
     }
@@ -132,17 +134,14 @@ impl<T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static> T
     /// Tests the provided [`condition`](AsyncFnMut) occurs only after the [`Synchronizer`] under test is initialized.
     pub async fn after_init_results_in(
         self,
-        check_for_initialization: impl AsyncFn() -> bool,
         condition: impl AsyncFnMut() -> bool,
     ) -> Result<(), Box<dyn Error>> {
+        let metadata_scope = self.test_config.metadata_scope.clone();
+
         // Asynchronously kick off the synchronizer in a separate task
         tokio::spawn(self.sync.synchronize::<KafkaSnapshot>());
 
-        if let Err(e) = wait_for_condition(check_for_initialization).await {
-            // Stop the synchronizer
-            self.cancel_token.cancel();
-            return Err(e);
-        }
+        await_phoebus_runtime_ready(&self.harness, &self.test_config, &metadata_scope).await;
 
         let result = do_test(
             self.harness,
@@ -157,69 +156,96 @@ impl<T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static> T
 
         result
     }
+}
 
-    /// Tests the provided [`condition`](AsyncFnMut) occurs during the intitialization of the [`Synchronizer`] under test.
-    pub async fn on_init_results_in(
-        self,
-        condition: impl AsyncFnMut() -> bool,
-    ) -> Result<(), Box<dyn Error>> {
-        send_test_message(&self.harness, self.message.unwrap(), self.send_topic).await?;
+/// Rewrites the synchronizer config so each test uses fresh Kafka topics allocated by the shared harness.
+///
+/// [`KafkaTestHarness`] uses a global mock cluster, so fixed topic names are visible across test
+/// cases. Harness-generated unique topics keep startup hydration and runtime monitoring isolated to messages from the
+/// current test.
+async fn rewrite_config_topics_with_harness_topics(
+    harness: &KafkaTestHarness,
+    config: &mut SynchronizerConfig,
+) {
+    config.controls_topic = KafkaTestHarness::new_topic(CONTROLS_TOPIC).await;
 
-        // Asynchronously kick off the synchronizer in a separate task
-        tokio::spawn(self.sync.synchronize::<KafkaSnapshot>());
+    let mut phoebus_topics = Vec::with_capacity(config.phoebus_topics.len());
+    for topic in &config.phoebus_topics {
+        phoebus_topics.push(KafkaTestHarness::new_topic(topic).await);
+    }
+    config.phoebus_topics = phoebus_topics;
 
-        let result = wait_for_condition(condition).await;
+    // Ensure all allocated topics exist on the same shared mock cluster host referenced by this harness handle.
+    let _ = harness.host().await;
+}
 
-        // Stop the synchronizer
-        self.cancel_token.cancel();
-
-        result
+/// Returns the topic on which the test message should be published based on the provided [`MessageOrigin`].
+fn prioritized_send_topic(origin: MessageOrigin, config: &SynchronizerConfig) -> String {
+    let phoebus_topic = config.phoebus_topics[0].clone();
+    match origin {
+        MessageOrigin::Controls => config.controls_topic.clone(),
+        MessageOrigin::Phoebus => phoebus_topic,
     }
 }
 
-/// Orders the topics from [`SynchronizerConfig`] according to the provided [`MessageOrigin`].
-fn prioritize_topics(origin: MessageOrigin, config: &SynchronizerConfig) -> (String, Vec<String>) {
-    let controls_topic = config.controls_topic.clone();
-    let phoebus_topic = config.phoebus_topics[0].clone();
-    let phoebus_command_topic = get_command_topic(&phoebus_topic);
-
-    let send_topic = match origin {
-        MessageOrigin::Controls => controls_topic.clone(),
-        MessageOrigin::Phoebus => phoebus_topic.clone(),
-        MessageOrigin::PhoebusCommand => phoebus_command_topic.clone(),
-    };
-    (
-        send_topic,
-        vec![controls_topic, phoebus_topic, phoebus_command_topic],
-    )
-}
-
 /// Produces the specified [`Message`] on the [`Harness`]'s host and topic.
-async fn send_test_message(
-    harness: &Harness,
-    message: Message,
+pub async fn send_test_message<N, M: Message<N>>(
+    harness: &KafkaTestHarness,
+    message: M,
     send_topic: String,
 ) -> Result<(), Box<dyn Error>> {
-    let sender = KafkaPublisher::new(harness.host(), send_topic.clone());
+    let sender = KafkaPublisher::new(harness.host().await, send_topic);
     sender.publish(message).await?;
-    info!("message sent to {}", send_topic);
     Ok(())
 }
 
-/// Helper method that sends the message to induce the behavior being tested and checks to see
-///  whether the desired outcome was observed.
-async fn do_test(
-    harness: Harness,
-    message: Message,
+/// Sends the test message and waits for the provided condition to be satisfied.
+async fn do_test<N, M: Message<N>>(
+    harness: KafkaTestHarness,
+    message: M,
     send_topic: String,
     condition: impl AsyncFnMut() -> bool,
 ) -> Result<(), Box<dyn Error>> {
-    send_test_message(&harness, message, send_topic).await?;
+    send_test_message(&harness, message, send_topic.clone()).await?;
     wait_for_condition(condition).await
 }
 
-/// Loops indefinitely while checking to see if the provided [`condition`](AsyncFnMut) has been met.
-/// Rechecks the condition every 100ms.
+/// Sends a benign Phoebus config message that causes the runtime monitor to create a predictable local cache entry.
+pub async fn await_phoebus_runtime_ready(
+    harness: &KafkaTestHarness,
+    test_config: &SynchronizerConfig,
+    metadata_scope: &MetadataScope,
+) {
+    let readiness_message = StringMessage::new(
+        Some(format!("config:runtime/readiness/{READINESS_DEVICE}")),
+        serde_json::to_string(&Config {
+            enabled: Some(true.to_string()),
+            host: "localhost".to_string(),
+            user: "test user".to_string(),
+            phoebus_specific: HashMap::new(),
+        })
+        .expect("Failed to serialize Phoebus runtime readiness config."),
+    );
+
+    send_test_message(
+        harness,
+        readiness_message,
+        test_config.phoebus_topics[0].clone(),
+    )
+    .await
+    .expect("Failed to publish Phoebus runtime readiness probe message.");
+
+    wait_for_condition(async || {
+        metadata_scope
+            .lookup_metadata_by_device(READINESS_DEVICE)
+            .await
+            .is_some()
+    })
+    .await
+    .expect("Phoebus runtime readiness probe did not populate test metadata cache.");
+}
+
+/// Polls the provided async condition every 100ms until it returns `true`.
 async fn try_condition(mut condition: impl AsyncFnMut() -> bool) {
     loop {
         if condition().await {
