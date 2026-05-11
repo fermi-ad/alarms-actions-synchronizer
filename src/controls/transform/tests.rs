@@ -97,6 +97,6 @@ fn should_not_transform_when_operation_is_state() {
         phoebus_topic: String::new(),
     };
 
-    let result = controls_to_phoebus(&status, Operation::State, &metadata).unwrap_err();
-    assert_eq!(result, Operation::unsupported_sync_action_error());
+    let result = controls_to_phoebus(&status, Operation::State, &metadata);
+    assert!(result.is_err());
 }

@@ -217,12 +217,6 @@ pub enum Operation {
 }
 
 impl Operation {
-    /// Provides a [`String`] to use when an attempt is made to build an outbound sync message for a
-    /// Controls state that does not map to a supported Phoebus synchronization action.
-    pub fn unsupported_sync_action_error() -> String {
-        "Controls state does not map to a supported Phoebus synchronization action".to_string()
-    }
-
     /// Generates the prefix for the Kafka message key that is relevant to the current operation type.
     pub fn get_key_prefix(&self) -> &'static str {
         match self {
@@ -256,6 +250,48 @@ pub struct PvMetadata {
 
     /// The topic that this PV's alarms appear in.
     pub phoebus_topic: String,
+}
+
+impl PvMetadata {
+    /// Creates PV metadata from a Phoebus configuration message.
+    ///
+    /// This method is used when Phoebus config traffic discovers a new device
+    /// at runtime. The metadata includes:
+    /// - And empty hashmap to store Phoebus metadata
+    /// - The display path extracted from the key
+    /// - The normalized topic name (stripping "Command" suffix if present)
+    ///
+    /// # Arguments
+    ///
+    /// - `key`: The parsed Phoebus Kafka key containing operation, display_path, and device
+    /// - `topic`: The Phoebus topic name (will be normalized by stripping "Command" suffix)
+    ///
+    /// # Returns
+    ///
+    /// A new [`PvMetadata`] instance with empty Phoebus metadata and derived fields.
+    pub fn from_unmapped(key: &Key, topic: &str) -> Self {
+        Self {
+            phoebus_config_metadata: HashMap::new(),
+            display_path: key.display_path.clone(),
+            phoebus_topic: normalize_topic(topic),
+        }
+    }
+}
+
+/// Normalizes a Phoebus topic name by stripping the "Command" suffix if present.
+///
+/// This ensures consistent topic naming regardless of whether the original
+/// topic was a command topic or a config/state topic.
+///
+/// # Arguments
+///
+/// - `topic`: The topic name to normalize
+///
+/// # Returns
+///
+/// The normalized topic name (without "Command" suffix).
+fn normalize_topic(topic: &str) -> String {
+    topic.strip_suffix("Command").unwrap_or(topic).to_owned()
 }
 
 /// This function is used by [`serde`] to convert the [`Config::enabled`] field from a JSON value to an [`Option<String>`].

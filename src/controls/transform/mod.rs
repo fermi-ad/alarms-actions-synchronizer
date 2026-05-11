@@ -5,6 +5,7 @@
 
 use chrono::{TimeZone, Utc};
 use rust_pubsub_lib::{Message, StringMessage};
+use tracing::error;
 
 use crate::models::ACK_COMMAND;
 use crate::models::alarm::Status;
@@ -32,7 +33,7 @@ pub fn controls_to_phoebus(
     controls_alarm: &Status,
     operation: Operation,
     metadata: &PvMetadata,
-) -> Result<StringMessage, String> {
+) -> Result<StringMessage, ()> {
     let transformed_key =
         get_phoebus_key(&operation, &metadata.display_path, &controls_alarm.device);
     let transformed_value = match operation {
@@ -51,9 +52,15 @@ pub fn controls_to_phoebus(
                 phoebus_specific: metadata.phoebus_config_metadata.clone(),
             })
         }
-        Operation::State => return Err(Operation::unsupported_sync_action_error()),
+        Operation::State => {
+            error!("Controls state does not map to a supported Phoebus synchronization action\n Message from Controls: {controls_alarm:?}");
+            return Err(())
+        },
     }
-    .map_err(|e| format!("{e:?}"))?;
+    .map_err(|e| {
+                error!(
+                    "Unable to create message to send to Phoebus.\n Cause: {e}\n Message from Controls: {controls_alarm:?}"
+                );})?;
     Ok(StringMessage::new(Some(transformed_key), transformed_value))
 }
 
@@ -82,6 +89,6 @@ fn normalized_enablement_from_controls(controls_alarm: &Status) -> NormalizedEna
 }
 
 /// Generates the [`key`](Message::key) for the Phoebus [`Message`].
-fn get_phoebus_key(operation: &Operation, display_path: &String, device: &String) -> String {
+fn get_phoebus_key(operation: &Operation, display_path: &str, device: &str) -> String {
     format!("{}:{}/{}", operation.get_key_prefix(), display_path, device)
 }

@@ -16,6 +16,8 @@ use crate::models::generated::Timestamp;
 #[cfg(test)]
 mod tests;
 
+const INITIAL_GENERATION: u64 = 1;
+
 /// Holds a shared gRPC client and a monotonically increasing generation counter used to detect stale reconnect attempts.
 #[derive(Clone)]
 struct SharedConnectionState {
@@ -33,15 +35,6 @@ struct ConnectionManager {
     connection_gate: Arc<Mutex<()>>,
     /// The host address of the Controls gRPC alarms service.
     grpc_alarms_svc_host: String,
-}
-
-/// A short-lived snapshot of the shared client and its generation, used for a single outbound command attempt.
-#[derive(Clone)]
-struct RequestClient {
-    /// The gRPC client to use for the outbound command.
-    client: AlarmCommandsClient<Channel>,
-    /// The generation of the shared client at the time this snapshot was taken, used to detect stale reconnects.
-    generation: Option<u64>,
 }
 
 /// Handles the reference to the global [`AlarmCommandsClient`] instance and provides methods to interact
@@ -112,10 +105,10 @@ impl ControlsClient {
         Request: Clone,
         AlarmCommandsClient<Channel>: CommandRequest<Request>,
     {
-        let RequestClient {
+        let SharedConnectionState {
             mut client,
             generation,
-        } = match self.connection_manager.request_client().await {
+        } = match self.connection_manager.get_or_connect_client().await {
             Some(client) => client,
             None => return OutboundSyncResult::Failed,
         };
@@ -129,19 +122,17 @@ impl ControlsClient {
             return OutboundSyncResult::Succeeded;
         }
 
-        let mut replacement_client =
-            match self.connection_manager.reconnect_client(generation).await {
-                Some(client) => client,
-                None => return OutboundSyncResult::Failed,
-            };
+        let mut retry_conn = match self.connection_manager.reconnect_client(generation).await {
+            Some(client) => client,
+            None => return OutboundSyncResult::Failed,
+        };
 
-        if Self::run_operation(&mut replacement_client, request).await {
+        if Self::run_operation(&mut retry_conn.client, request).await {
             return OutboundSyncResult::Succeeded;
         }
 
-        let final_generation = self.connection_manager.current_generation().await;
         error!(
-            generation = final_generation,
+            generation = retry_conn.generation,
             command = command_label,
             "Outbound command exhausted reconnect retry"
         );
@@ -184,25 +175,16 @@ impl ConnectionManager {
         }
     }
 
-    /// Returns a [`RequestClient`] snapshot ready for a single outbound command attempt.
-    ///
-    /// Lazily initializes the shared connection if one does not yet exist. Returns `None` if the connection cannot be established.
-    async fn request_client(&self) -> Option<RequestClient> {
-        let client = self.get_or_connect_client().await?;
-        let generation = self.current_generation().await;
-        Some(RequestClient { client, generation })
-    }
-
     /// Returns the existing shared client if one is available, or establishes a new connection.
     ///
     /// Uses a double-checked locking pattern to avoid redundant connection attempts under concurrent load.
-    async fn get_or_connect_client(&self) -> Option<AlarmCommandsClient<Channel>> {
+    async fn get_or_connect_client(&self) -> Option<SharedConnectionState> {
         if let Some(conn) = self.connection.read().await.as_ref().cloned() {
             debug!(
                 generation = conn.generation,
                 "Reusing existing shared Controls gRPC client for outbound command"
             );
-            return Some(conn.client);
+            return Some(conn);
         }
 
         let _connection_gate = self.connection_gate.lock().await;
@@ -212,7 +194,7 @@ impl ConnectionManager {
                 generation = conn.generation,
                 "Reusing existing shared Controls gRPC client for outbound command"
             );
-            return Some(conn.client);
+            return Some(conn);
         }
 
         info!("Initializing shared Controls gRPC client");
@@ -224,22 +206,23 @@ impl ConnectionManager {
             }
         };
 
-        self.publish_client(client.clone(), 1).await;
+        let conn = SharedConnectionState {
+            client,
+            generation: INITIAL_GENERATION,
+        };
+        self.publish_client(conn.clone()).await;
         info!(
-            generation = 1u64,
+            generation = INITIAL_GENERATION,
             "Outbound command triggered initial shared Controls gRPC client creation"
         );
-        Some(client)
+        Some(conn)
     }
 
     /// Attempts to replace the shared client after a command failure.
     ///
     /// If another task has already published a newer client generation, the existing newer client is returned
     /// instead of creating a redundant connection. Returns `None` if reconnection fails.
-    async fn reconnect_client(
-        &self,
-        failed_generation: Option<u64>,
-    ) -> Option<AlarmCommandsClient<Channel>> {
+    async fn reconnect_client(&self, failed_generation: u64) -> Option<SharedConnectionState> {
         warn!(
             generation = failed_generation,
             "Outbound command failed before reconnect; retry recovery will be attempted"
@@ -248,24 +231,20 @@ impl ConnectionManager {
         let _connection_gate = self.connection_gate.lock().await;
 
         if let Some(state) = self.connection.read().await.as_ref().cloned()
-            && Some(state.generation) != failed_generation
+            && state.generation != failed_generation
         {
             info!(
                 generation = state.generation,
                 "Skipped duplicate reconnect because a newer shared Controls gRPC client was already published"
             );
-            return Some(state.client);
+            return Some(state);
         }
 
-        let next_generation = failed_generation.unwrap_or(0).saturating_add(1);
+        let next_generation = failed_generation.saturating_add(1);
         warn!(
             failed_generation = failed_generation,
             next_generation = next_generation,
             "Reconnecting shared Controls gRPC client after command failure"
-        );
-        info!(
-            generation = next_generation,
-            "Starting reconnect attempt for shared Controls gRPC client"
         );
 
         let client = match AlarmCommandsClient::connect(self.grpc_alarms_svc_host.clone()).await {
@@ -278,28 +257,22 @@ impl ConnectionManager {
             }
         };
 
-        self.publish_client(client.clone(), next_generation).await;
-        Some(client)
+        let conn = SharedConnectionState {
+            client,
+            generation: next_generation,
+        };
+        self.publish_client(conn.clone()).await;
+        Some(conn)
     }
 
-    /// Returns the generation counter of the current shared client, or `None` if no client has been established yet.
-    async fn current_generation(&self) -> Option<u64> {
-        self.connection
-            .read()
-            .await
-            .as_ref()
-            .map(|state| state.generation)
-    }
-
-    /// Stores the provided client as the new shared connection state with the given generation counter.
-    async fn publish_client(&self, client: AlarmCommandsClient<Channel>, generation: u64) {
+    /// Stores the new shared connection state.
+    async fn publish_client(&self, conn_state: SharedConnectionState) {
         let mut lock = self.connection.write().await;
-        *lock = Some(SharedConnectionState { client, generation });
-
         debug!(
-            generation = generation,
+            generation = conn_state.generation,
             "Published shared Controls gRPC client generation"
         );
+        *lock = Some(conn_state);
     }
 }
 

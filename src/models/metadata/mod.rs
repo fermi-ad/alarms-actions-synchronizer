@@ -18,7 +18,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::RwLock;
 
-use crate::models::phoebus::{Config, Key, PvMetadata};
+use crate::models::phoebus::PvMetadata;
 
 #[cfg(test)]
 mod tests;
@@ -27,7 +27,6 @@ mod tests;
 ///
 /// This struct provides operations for:
 /// - [`lookup_metadata_by_device()`](MetadataScope::lookup_metadata_by_device) - Get metadata for a device, if available
-/// - [`discover_metadata_from_config()`](MetadataScope::discover_metadata_from_config) - Create metadata from Phoebus config
 /// - [`update_cached_metadata()`](MetadataScope::update_cached_metadata) - Update the metadata cache
 ///
 /// The abstraction preserves the current semantics:
@@ -81,45 +80,4 @@ impl PartialEq for MetadataScope {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.metadata_cache, &other.metadata_cache)
     }
-}
-
-/// Creates PV metadata from a Phoebus configuration message.
-///
-/// This method is used when Phoebus config traffic discovers a new device
-/// at runtime. The metadata includes:
-/// - The configuration from the message
-/// - The display path extracted from the key
-/// - The normalized topic name (stripping "Command" suffix if present)
-///
-/// # Arguments
-///
-/// - `key`: The parsed Phoebus Kafka key containing operation, display_path, and device
-/// - `config`: The configuration from the Phoebus message
-/// - `topic`: The Phoebus topic name (will be normalized by stripping "Command" suffix)
-///
-/// # Returns
-///
-/// A new `PvMetadata` instance with the provided configuration and derived fields.
-pub fn build_metadata_from_config(key: &Key, config: &Config, topic: &str) -> PvMetadata {
-    PvMetadata {
-        phoebus_config_metadata: config.phoebus_specific.clone(),
-        display_path: key.display_path.clone(),
-        phoebus_topic: normalize_topic(topic),
-    }
-}
-
-/// Normalizes a Phoebus topic name by stripping the "Command" suffix if present.
-///
-/// This ensures consistent topic naming regardless of whether the original
-/// topic was a command topic or a config/state topic.
-///
-/// # Arguments
-///
-/// - `topic`: The topic name to normalize
-///
-/// # Returns
-///
-/// The normalized topic name (without "Command" suffix).
-fn normalize_topic(topic: &str) -> String {
-    topic.strip_suffix("Command").unwrap_or(topic).to_owned()
 }

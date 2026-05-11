@@ -10,6 +10,7 @@ use rust_pubsub_lib::{Publisher, Snapshot, Subscriber};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+use crate::models::AlarmStateCache;
 use crate::models::cache::CachedState;
 use crate::models::metadata::MetadataScope;
 
@@ -34,10 +35,10 @@ pub trait RuntimeSyncFactory: Sized {
 }
 
 /// Configuration data to initialize the synchronizer processes.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SynchronizerConfig {
     /// A reference to the shared cache of alarm state data.
-    pub alarm_states: Arc<RwLock<HashMap<String, CachedState>>>,
+    pub alarm_states: AlarmStateCache,
 
     /// A [`CancellationToken`] to handle gracefully shutting down the tokio runtime.
     pub cancel_token: CancellationToken,
@@ -94,24 +95,8 @@ impl SynchronizerConfig {
     }
 }
 
-impl Clone for SynchronizerConfig {
-    /// Generates a new instance with copies of the references to the shared caches.
-    /// That is, this will NOT create new caches on the heap, but references the same
-    /// instances as the [`SynchronizerConfig`] instance being cloned.
-    fn clone(&self) -> Self {
-        SynchronizerConfig {
-            alarm_states: Arc::clone(&self.alarm_states),
-            cancel_token: self.cancel_token.clone(),
-            controls_host: self.controls_host.clone(),
-            controls_topic: self.controls_topic.clone(),
-            grpc_alarms_svc_host: self.grpc_alarms_svc_host.clone(),
-            phoebus_host: self.phoebus_host.clone(),
-            phoebus_topics: self.phoebus_topics.clone(),
-            metadata_scope: self.metadata_scope.clone(),
-        }
-    }
-}
-
+/// Manual implementation of [`PartialEq`] to compare [`alarm_states`](SynchronizerConfig::alarm_states)
+/// by address instead of doing a deep comparison
 impl PartialEq for SynchronizerConfig {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.alarm_states, &other.alarm_states)

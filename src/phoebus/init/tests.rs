@@ -101,8 +101,16 @@ fn generate_test_messages() -> Vec<ByteMessage> {
 #[tokio::test]
 #[tracing_test::traced_test]
 async fn should_report_error_getting_snapshot() {
-    let result = get_existing_messages::<ErroringSnapshot>(String::new(), String::new()).await;
-    assert!(result.is_empty());
+    let alarm_cache = Arc::new(RwLock::new(HashMap::new()));
+    let metadata_scope = MetadataScope::new();
+    get_existing_messages_from_phoebus::<ErroringSnapshot>(
+        String::new(),
+        vec![String::new()],
+        &alarm_cache,
+        &metadata_scope,
+    )
+    .await;
+    assert!(alarm_cache.read().await.is_empty());
     assert!(logs_contain(&format!("{}", PubSubError::default())));
 }
 
@@ -129,7 +137,7 @@ async fn should_parse_existing_messages() {
     assert!(
         state_reader
             .get("ok_severity_device")
-            .is_some_and(|state| state.state == State::Ok)
+            .is_some_and(|state| state.state == State::Unbypassed)
     );
     assert!(
         state_reader

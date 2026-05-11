@@ -11,12 +11,15 @@
 //! It intentionally does not promise exact acknowledgement-history reconstruction because the available startup
 //! Kafka evidence is incomplete for that purpose.
 
-use crate::models::{
-    AlarmStateCache, CachedState, IgnoreReason, SkipReason, SyncOutcome,
-    alarm::status::State,
-    metadata::MetadataScope,
-    phoebus::{Config, Key, KeyParseError, Operation, PvMetadata},
-    record_alarm_state, record_startup_state_evidence,
+use crate::{
+    models::{
+        AlarmStateCache, CachedState, IgnoreReason, SkipReason, SyncOutcome,
+        alarm::status::State,
+        metadata::MetadataScope,
+        phoebus::{Config, Key, Operation, PvMetadata},
+        record_alarm_state, record_startup_state_evidence,
+    },
+    phoebus::map_key_parse_error,
 };
 use rust_pubsub_lib::{Message, Snapshot, StringMessage};
 use serde_json::Value;
@@ -44,23 +47,14 @@ pub async fn get_existing_messages_from_phoebus<SNAP: Snapshot>(
     metadata_scope: &MetadataScope,
 ) {
     for topic in topics {
-        let existing_messages =
-            get_existing_messages::<SNAP>(phoebus_host.clone(), topic.clone()).await;
+        let existing_messages = match SNAP::get(phoebus_host.clone(), topic.clone()).await {
+            Ok(messages) => messages,
+            Err(e) => {
+                error!("{e}");
+                Vec::new()
+            }
+        };
         populate_caches(existing_messages, topic, state_cache, metadata_scope).await;
-    }
-}
-
-/// Pulls in a `Vec` of all [`Message`]s on the specified topic.
-async fn get_existing_messages<SNAP: Snapshot>(
-    phoebus_host: String,
-    topic: String,
-) -> Vec<StringMessage> {
-    match SNAP::get(phoebus_host, topic).await {
-        Ok(messages) => messages,
-        Err(e) => {
-            error!("{e}");
-            Vec::new()
-        }
     }
 }
 
@@ -77,12 +71,6 @@ async fn populate_caches(
 ) {
     if messages.is_empty() {
         info!("Topic {topic} has no messages");
-    } else {
-        info!(
-            "Startup hydration loaded {} message(s) from topic '{}' before runtime monitors started. This can indicate shared-topic test contamination when tests reuse unsalted topics.",
-            messages.len(),
-            topic
-        );
     }
     for message in messages {
         let msg_key = match message.key() {
@@ -98,22 +86,24 @@ async fn populate_caches(
         let key = match Key::parse(&msg_key) {
             Ok(parsed) => parsed,
             Err(error) => {
-                let outcome = log_startup_key_parse_outcome(&msg_key, &message.value(), &error);
+                let outcome = map_key_parse_error("startup", &msg_key, &message.value(), &error);
                 debug!("Startup hydration outcome: {outcome:?}");
                 continue;
             }
         };
-        let outcome = if key.operation == Operation::Config {
-            handle_config(&topic, state_cache, metadata_scope, key, message.value()).await
-        } else if key.operation == Operation::State {
-            handle_state(state_cache, key, message.value()).await
-        } else {
-            debug!(
-                "Ignoring Phoebus startup message with unrecognized operation prefix.\n Original message from Phoebus: {{ key: {key:?}, text: {} }}",
-                message.value()
-            );
-            SyncOutcome::Ignored {
-                reason: IgnoreReason::StateNoise,
+        let outcome = match key.operation {
+            Operation::Config => {
+                handle_config(&topic, state_cache, metadata_scope, key, message.value()).await
+            }
+            Operation::State => handle_state(state_cache, key, message.value()).await,
+            Operation::Command => {
+                debug!(
+                    "Ignoring Phoebus startup message with unrecognized operation prefix.\n Original message from Phoebus: {{ key: {key:?}, text: {} }}",
+                    message.value()
+                );
+                SyncOutcome::Ignored {
+                    reason: IgnoreReason::StateNoise,
+                }
             }
         };
         debug!("Startup hydration outcome: {outcome:?}");
@@ -138,8 +128,8 @@ async fn handle_config(
                 "Failed deserializing config message: {e:?}\n Tried deserializing: {}",
                 value
             );
-            return SyncOutcome::Ignored {
-                reason: IgnoreReason::StateNoise,
+            return SyncOutcome::Skipped {
+                reason: SkipReason::MalformedMessage,
             };
         }
     };
@@ -178,67 +168,33 @@ async fn handle_config(
 /// may be incomplete, this path intentionally tolerates acknowledgement ambiguity and prefers to preserve any existing
 /// bypass/snooze state that was already derived from a config record.
 async fn handle_state(state_cache: &AlarmStateCache, key: Key, value: String) -> SyncOutcome {
-    let json_opt = serde_json::from_str::<Value>(&value).ok();
-    match json_opt.and_then(|json| {
-        json.get("severity")
-            .and_then(Value::as_str)
-            .map(|borrowed| borrowed.to_ascii_uppercase())
-    }) {
-        Some(severity) => {
-            let state = if severity.ends_with("_ACK") {
-                State::Acknowledged
-            } else {
-                match severity.as_str() {
-                    "MINOR" | "MAJOR" => State::Alarmed,
-                    "OK" => State::Ok,
-                    _ => State::Unknown,
-                }
-            };
+    if let Some(severity) = extract_severity(&value) {
+        let state = if severity.ends_with("_ACK") {
+            State::Acknowledged
+        } else {
+            match severity.as_str() {
+                "MINOR" | "MAJOR" => State::Alarmed,
+                // Map "OK" to Unbypassed to set up the state machine logic for later
+                "OK" => State::Unbypassed,
+                _ => State::Unknown,
+            }
+        };
 
-            record_startup_state_evidence(
-                state_cache,
-                &key.device,
-                CachedState { state, wake: None },
-            )
+        record_startup_state_evidence(state_cache, &key.device, CachedState { state, wake: None })
             .await;
 
-            SyncOutcome::Hydrated
-        }
-        None => {
-            debug!("Could not match any fields from {value}.");
-            SyncOutcome::Ignored {
-                reason: IgnoreReason::StateNoise,
-            }
+        SyncOutcome::Hydrated
+    } else {
+        debug!("Could not match any fields from {value}.");
+        SyncOutcome::Ignored {
+            reason: IgnoreReason::StateNoise,
         }
     }
 }
 
-/// Logs the structured parse outcome for a startup hydration key and maps it to the public synchronization outcome.
-fn log_startup_key_parse_outcome(key: &str, value: &str, error: &KeyParseError) -> SyncOutcome {
-    match error {
-        KeyParseError::UnsupportedOperation => {
-            debug!(
-                "Ignoring Phoebus message during startup hydration because its key uses an untracked operation prefix.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
-            );
-            SyncOutcome::Ignored {
-                reason: IgnoreReason::StateNoise,
-            }
-        }
-        KeyParseError::MalformedStructure => {
-            warn!(
-                "Skipping malformed Phoebus message key during startup hydration: expected '<operation>:<display path>/<device>'.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
-            );
-            SyncOutcome::Skipped {
-                reason: SkipReason::MalformedMessage,
-            }
-        }
-        KeyParseError::EmptyDevice => {
-            warn!(
-                "Skipping Phoebus message key with empty device name during startup hydration. Empty device names are treated as invalid.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
-            );
-            SyncOutcome::Skipped {
-                reason: SkipReason::MalformedMessage,
-            }
-        }
-    }
+fn extract_severity(value: &str) -> Option<String> {
+    let json = serde_json::from_str::<Value>(value).ok()?;
+    json.get("severity")
+        .and_then(|v| v.as_str())
+        .map(|borrowed| borrowed.to_ascii_uppercase())
 }

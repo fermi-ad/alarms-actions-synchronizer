@@ -1,10 +1,13 @@
+use chrono::{Timelike, Utc};
+
 use super::*;
 use crate::models::alarm::status::State;
+use crate::models::generated::Timestamp;
 use crate::models::outcomes::AttemptResult;
 use crate::models::phoebus::{Config, Key, Operation, PvMetadata};
 use crate::models::{
-    ACK_COMMAND, CachedState, IgnoreReason, ObservedStatePolicy, OutboundSyncResult, SkipReason,
-    SyncDirection, SyncOutcome,
+    ACK_COMMAND, CachedState, ObservedStatePolicy, OutboundSyncResult, SkipReason, SyncDirection,
+    SyncOutcome,
 };
 use std::collections::HashMap;
 
@@ -133,7 +136,7 @@ fn should_decide_config_with_same_enablement_as_metadata_only_update() {
 }
 
 #[test]
-fn should_decide_bypassed_phoebus_config_as_controls_bypass_or_snooze() {
+fn should_decide_bypassed_phoebus_config_as_controls_bypass() {
     let incoming_config = Config {
         enabled: Some(String::from("false")),
         user: String::from("test-user"),
@@ -154,7 +157,7 @@ fn should_decide_bypassed_phoebus_config_as_controls_bypass_or_snooze() {
 
     assert_eq!(
         decide_phoebus_config(&incoming_config, &cached_metadata, &observed),
-        Ok(PhoebusConfigDecision::BypassOrSnooze {
+        Ok(PhoebusConfigDecision::Bypass {
             updated_state: CachedState {
                 state: State::Bypassed,
                 wake: None,
@@ -164,7 +167,42 @@ fn should_decide_bypassed_phoebus_config_as_controls_bypass_or_snooze() {
 }
 
 #[test]
-fn should_decide_active_phoebus_config_as_local_only_recording() {
+fn should_decide_snoozed_phoebus_config_as_controls_snooze() {
+    let time = Utc::now() + Duration::from_hours(24);
+    let incoming_config = Config {
+        enabled: Some(time.to_rfc3339()),
+        user: String::from("test-user"),
+        ..Config::default()
+    };
+
+    let cached_metadata = PvMetadata {
+        phoebus_config_metadata: HashMap::new(),
+        display_path: String::new(),
+        phoebus_topic: String::new(),
+    };
+
+    // The observed state is Unbypassed (active), so the incoming Snoozed state is not suppressed.
+    let observed = ObservedStatePolicy::new(Some(CachedState {
+        state: State::Unbypassed,
+        wake: None,
+    }));
+
+    assert_eq!(
+        decide_phoebus_config(&incoming_config, &cached_metadata, &observed),
+        Ok(PhoebusConfigDecision::Snooze {
+            updated_state: CachedState {
+                state: State::Bypassed,
+                wake: Some(Timestamp {
+                    seconds: time.timestamp(),
+                    nanos: time.nanosecond() as i32
+                })
+            }
+        })
+    );
+}
+
+#[test]
+fn should_decide_active_phoebus_config_as_controls_activation() {
     let incoming_config = Config {
         enabled: Some(String::from("true")),
         user: String::from("test-user"),
@@ -185,7 +223,7 @@ fn should_decide_active_phoebus_config_as_local_only_recording() {
 
     assert_eq!(
         decide_phoebus_config(&incoming_config, &cached_metadata, &observed),
-        Ok(PhoebusConfigDecision::RecordActive {
+        Ok(PhoebusConfigDecision::Activate {
             updated_state: CachedState {
                 state: State::Unbypassed,
                 wake: None,
@@ -272,30 +310,6 @@ fn should_map_malformed_phoebus_config_to_skipped_outcome() {
 }
 
 #[test]
-fn should_map_untracked_monitor_key_to_noise_ignored_outcome() {
-    assert_eq!(
-        log_key_parse_outcome(
-            "state:display/device",
-            "{}",
-            &KeyParseError::UnsupportedOperation,
-        ),
-        SyncOutcome::Ignored {
-            reason: IgnoreReason::StateNoise,
-        }
-    );
-}
-
-#[test]
-fn should_map_malformed_monitor_key_to_skipped_outcome() {
-    assert_eq!(
-        log_key_parse_outcome("malformed-key", "{}", &KeyParseError::MalformedStructure),
-        SyncOutcome::Skipped {
-            reason: SkipReason::MalformedMessage,
-        }
-    );
-}
-
-#[test]
 fn should_treat_observed_acknowledged_state_as_duplicate_acknowledgement() {
     let command = Command {
         command: ACK_COMMAND.to_string(),
@@ -312,16 +326,6 @@ fn should_treat_observed_acknowledged_state_as_duplicate_acknowledgement() {
             })),
         ),
         Ok(PhoebusCommandDecision::SuppressedByPolicy)
-    );
-}
-
-#[test]
-fn should_map_empty_device_monitor_key_to_skipped_outcome() {
-    assert_eq!(
-        log_key_parse_outcome("command:display/", "{}", &KeyParseError::EmptyDevice),
-        SyncOutcome::Skipped {
-            reason: SkipReason::MalformedMessage,
-        }
     );
 }
 

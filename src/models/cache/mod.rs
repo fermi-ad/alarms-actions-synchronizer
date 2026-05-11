@@ -130,9 +130,9 @@ impl ObservedStatePolicy {
     /// Suppression occurs when the incoming state is identical to the observed state, or when
     /// the transition from the observed state to the incoming state is forbidden by policy.
     pub fn suppresses_incoming(&self, incoming: &CachedState) -> bool {
-        self.observed
-            .as_ref()
-            .is_some_and(|observed| observed_suppresses_incoming(observed, incoming))
+        self.observed.as_ref().is_some_and(|observed| {
+            observed == incoming || is_transition_forbidden(observed, incoming)
+        })
     }
 }
 
@@ -174,13 +174,6 @@ pub async fn record_startup_state_evidence(
         return;
     }
     writer.insert(device.to_owned(), state);
-}
-
-/// Returns `true` if the observed state should suppress the incoming state.
-///
-/// Suppression occurs when the two states are equal (duplicate) or when the transition is forbidden.
-fn observed_suppresses_incoming(observed: &CachedState, incoming: &CachedState) -> bool {
-    observed == incoming || is_transition_forbidden(observed, incoming)
 }
 
 /// Guards against a device coming out of bypass unless the new state us an updated bypass (i.e., the timer on a snoozed alarm was changed)

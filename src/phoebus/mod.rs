@@ -2,11 +2,16 @@
 //!
 //! Contains the [`Synchronizer`] for pushing Phoebus commands and configs into the Controls alarm server.
 
-use rust_pubsub_lib::{Publisher, Snapshot, Subscriber};
+use rust_pubsub_lib::{
+    KafkaPublisher, KafkaSnapshot, KafkaSubscriber, Publisher, Snapshot, Subscriber,
+};
 use tokio::task::JoinSet;
-use tracing::info;
+use tracing::{debug, info, warn};
 
-use crate::models::{RuntimeSyncFactory, Synchronizer, SynchronizerConfig};
+use crate::models::phoebus::KeyParseError;
+use crate::models::{
+    IgnoreReason, RuntimeSyncFactory, SkipReason, SyncOutcome, Synchronizer, SynchronizerConfig,
+};
 use crate::phoebus::monitor::Monitor;
 use crate::utils::get_command_topic;
 use init::get_existing_messages_from_phoebus;
@@ -65,10 +70,50 @@ impl<P: Publisher, S: Subscriber + Send + Sync + 'static> Synchronizer<P, S> for
 #[async_trait::async_trait]
 impl RuntimeSyncFactory for SyncImpl {
     fn new(config: SynchronizerConfig) -> Self {
-        <Self as Synchronizer<rust_pubsub_lib::KafkaPublisher, rust_pubsub_lib::KafkaSubscriber>>::new(config)
+        // Use the fully-qualified syntax to disambiguate which `new` method we're calling
+        <Self as Synchronizer<KafkaPublisher, KafkaSubscriber>>::new(config)
     }
 
     async fn run(self) {
-        <Self as Synchronizer<rust_pubsub_lib::KafkaPublisher, rust_pubsub_lib::KafkaSubscriber>>::synchronize::<rust_pubsub_lib::KafkaSnapshot>(self).await
+        // Use the fully-qualified syntax to satisfy the compiler's check that we're making a call on an instance of `Synchronizer`
+        <Self as Synchronizer<KafkaPublisher, KafkaSubscriber>>::synchronize::<KafkaSnapshot>(self)
+            .await
+    }
+}
+
+fn map_key_parse_error(
+    context: &str,
+    key: &str,
+    value: &str,
+    error: &KeyParseError,
+) -> SyncOutcome {
+    match error {
+        KeyParseError::UnsupportedOperation => {
+            debug!(
+                context = context,
+                "Ignoring Phoebus message because its key uses an untracked operation prefix.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
+            );
+            SyncOutcome::Ignored {
+                reason: IgnoreReason::StateNoise,
+            }
+        }
+        KeyParseError::MalformedStructure => {
+            warn!(
+                context = context,
+                "Skipping malformed Phoebus key: expected '<operation>:<display path>/<device>'.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
+            );
+            SyncOutcome::Skipped {
+                reason: SkipReason::MalformedMessage,
+            }
+        }
+        KeyParseError::EmptyDevice => {
+            warn!(
+                context = context,
+                "Skipping Phoebus key with empty device name. Empty device names are treated as invalid.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
+            );
+            SyncOutcome::Skipped {
+                reason: SkipReason::MalformedMessage,
+            }
+        }
     }
 }

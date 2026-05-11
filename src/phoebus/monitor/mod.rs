@@ -25,14 +25,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::models::alarm::status::State;
-use crate::models::metadata::{MetadataScope, build_metadata_from_config};
-use crate::models::phoebus::{
-    Command, Config, Key, KeyParseError, Operation, PhoebusParseError, PvMetadata,
-};
+use crate::models::metadata::MetadataScope;
+use crate::models::phoebus::{Command, Config, Key, Operation, PhoebusParseError, PvMetadata};
 use crate::models::{
-    ACK_COMMAND, AlarmStateCache, CachedState, IgnoreReason, ObservedStatePolicy, SkipReason,
-    SyncDirection, SyncOutcome, SynchronizerConfig, read_observed_state_policy, record_alarm_state,
+    ACK_COMMAND, AlarmStateCache, CachedState, IgnoreReason, ObservedStatePolicy,
+    OutboundSyncResult, SkipReason, SyncDirection, SyncOutcome, SynchronizerConfig,
+    read_observed_state_policy, record_alarm_state,
 };
+use crate::phoebus::map_key_parse_error;
 use crate::phoebus::sync::ControlsClient;
 
 #[cfg(test)]
@@ -105,47 +105,17 @@ impl Monitor {
         self.metadata_scope
             .lookup_metadata_by_device(&key.device)
             .await
-            .unwrap_or_else(|| build_metadata_from_config(key, &Config::default(), &self.topic))
+            .unwrap_or_else(|| PvMetadata::from_unmapped(key, &self.topic))
     }
 
-    /// Handles the transitional local-only path for a Phoebus config that re-activates a previously bypassed alarm.
-    ///
-    /// The synchronizer can observe that Phoebus considers the alarm active again, but it cannot yet mirror that
-    /// transition into Controls because the shared interfaces repository does not currently expose an API for
-    /// reporting active/OK alarm state back to Controls.
-    async fn handle_active_alarm(
+    /// Records the latest observed state for a device and returns the result of the sync operation.
+    async fn apply_outbound_and_record(
         &self,
+        outbound_result: OutboundSyncResult,
         device: &str,
         updated_state: CachedState,
-        user: &str,
     ) -> SyncOutcome {
-        let outbound_result = self.controls_client.activate_alarm(device, user).await;
-        debug!(
-            "Refreshing latest observed Phoebus activation state for device {} after outbound result {:?} to preserve duplicate suppression and loop prevention.",
-            device, outbound_result
-        );
         record_alarm_state(&self.alarm_states, device, updated_state).await;
-        outbound_result.into_sync_outcome(SyncDirection::PhoebusToControls)
-    }
-
-    /// Handles when a config came in from Phoebus to bypass an active alarm.
-    async fn handle_bypassed_alarm(
-        &self,
-        device: &str,
-        updated_state: CachedState,
-        user: &str,
-    ) -> SyncOutcome {
-        let outbound_result = match updated_state.wake {
-            Some(time) => self.controls_client.snooze_alarm(device, user, time).await,
-            None => self.controls_client.bypass_alarm(device, user).await,
-        };
-
-        debug!(
-            "Refreshing latest observed Phoebus bypass state for device {} after outbound result {:?} to preserve duplicate suppression and loop prevention.",
-            device, outbound_result
-        );
-        record_alarm_state(&self.alarm_states, device, updated_state).await;
-
         outbound_result.into_sync_outcome(SyncDirection::PhoebusToControls)
     }
 
@@ -183,14 +153,8 @@ impl Monitor {
                     .controls_client
                     .acknowledge_alarm(&key.device, &user)
                     .await;
-
-                debug!(
-                    "Refreshing latest observed Phoebus acknowledgement state for device {} after outbound result {:?} to preserve duplicate suppression and loop prevention.",
-                    key.device, outbound_result
-                );
-                record_alarm_state(&self.alarm_states, &key.device, updated_state).await;
-
-                outbound_result.into_sync_outcome(SyncDirection::PhoebusToControls)
+                self.apply_outbound_and_record(outbound_result, &key.device, updated_state)
+                    .await
             }
         }
     }
@@ -214,31 +178,53 @@ impl Monitor {
         let outcome = match decision {
             PhoebusConfigDecision::DuplicateConfig => {
                 info!(
-                    "Received config from Phoebus for device '{}' that matches the cached config. Doing nothing.",
+                    "Received config from Phoebus for device '{}' that does not update state and matches the cached config. Doing nothing.",
                     key.device
                 );
-                return SyncOutcome::Duplicate;
+                SyncOutcome::Duplicate
             }
             PhoebusConfigDecision::NoEnablementChange => SyncOutcome::Ignored {
                 reason: IgnoreReason::StateNoise,
             },
-            PhoebusConfigDecision::BypassOrSnooze { updated_state } => {
-                self.handle_bypassed_alarm(&key.device, updated_state, &config.user)
+            PhoebusConfigDecision::Bypass { updated_state } => {
+                let outbound_result = self
+                    .controls_client
+                    .bypass_alarm(&key.device, &config.user)
+                    .await;
+                self.apply_outbound_and_record(outbound_result, &key.device, updated_state)
                     .await
             }
-            PhoebusConfigDecision::RecordActive { updated_state } => {
-                self.handle_active_alarm(&key.device, updated_state, &config.user)
+            PhoebusConfigDecision::Activate { updated_state } => {
+                let outbound_result = self
+                    .controls_client
+                    .activate_alarm(&key.device, &config.user)
+                    .await;
+                self.apply_outbound_and_record(outbound_result, &key.device, updated_state)
+                    .await
+            }
+            PhoebusConfigDecision::Snooze { updated_state } => {
+                let outbound_result = self
+                    .controls_client
+                    .snooze_alarm(
+                        &key.device,
+                        &config.user,
+                        updated_state.wake.as_ref().copied().unwrap(),
+                    )
+                    .await;
+                self.apply_outbound_and_record(outbound_result, &key.device, updated_state)
                     .await
             }
         };
 
-        let new_metadata = PvMetadata {
-            phoebus_config_metadata: config.phoebus_specific,
-            ..cached_metadata
-        };
-        self.metadata_scope
-            .update_cached_metadata(&key.device, new_metadata)
-            .await;
+        if outcome != SyncOutcome::Duplicate {
+            let new_metadata = PvMetadata {
+                phoebus_config_metadata: config.phoebus_specific,
+                ..cached_metadata
+            };
+            self.metadata_scope
+                .update_cached_metadata(&key.device, new_metadata)
+                .await;
+        }
         outcome
     }
 
@@ -250,7 +236,7 @@ impl Monitor {
             let key = match Key::parse(&key_str) {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    let outcome = log_key_parse_outcome(&key_str, &value, &error);
+                    let outcome = map_key_parse_error("runtime", &key_str, &value, &error);
                     debug!("Phoebus monitor outcome: {outcome:?}");
                     return;
                 }
@@ -258,7 +244,14 @@ impl Monitor {
             let outcome = match key.operation {
                 Operation::Command => self.process_command(key, value).await,
                 Operation::Config => self.process_config(key, value).await,
-                Operation::State => process_other(key, value),
+                Operation::State => {
+                    debug!(
+                        "Received Phoebus message that is not a config or a command. Treating it as non-sync Phoebus noise and doing nothing.\n Original message from Phoebus: {{ key: {key:?}, text: {value} }}"
+                    );
+                    SyncOutcome::Ignored {
+                        reason: IgnoreReason::StateNoise,
+                    }
+                }
             };
             debug!("Phoebus monitor outcome: {outcome:?}");
         } else {
@@ -277,14 +270,10 @@ impl Monitor {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => break,
                 stream_item = phoebus_stream.next() => {
-                    match stream_item {
-                        Some(stream_result) => {
-                            match stream_result {
-                                Ok(message) => self.process_runtime_message(message).await,
-                                Err(e) => warn!("Error from within data stream: {e}"),
-                            }
-                        }
-                        None => break,
+                    let Some(stream_result) = stream_item else { break };
+                    match stream_result {
+                        Ok(message) => self.process_runtime_message(message).await,
+                        Err(e) => warn!("Error from within data stream: {e}"),
                     }
                 }
             }
@@ -335,8 +324,9 @@ fn decide_phoebus_command(
 enum PhoebusConfigDecision {
     DuplicateConfig,
     NoEnablementChange,
-    BypassOrSnooze { updated_state: CachedState },
-    RecordActive { updated_state: CachedState },
+    Activate { updated_state: CachedState },
+    Bypass { updated_state: CachedState },
+    Snooze { updated_state: CachedState },
 }
 
 /// Decides how an inbound Phoebus config should be handled before transport or cache side effects occur.
@@ -354,8 +344,14 @@ fn decide_phoebus_config(
     }
 
     match updated_state.state {
-        State::Bypassed => Ok(PhoebusConfigDecision::BypassOrSnooze { updated_state }),
-        State::Unbypassed => Ok(PhoebusConfigDecision::RecordActive { updated_state }),
+        State::Bypassed => {
+            if updated_state.wake.is_none() {
+                Ok(PhoebusConfigDecision::Bypass { updated_state })
+            } else {
+                Ok(PhoebusConfigDecision::Snooze { updated_state })
+            }
+        }
+        State::Unbypassed => Ok(PhoebusConfigDecision::Activate { updated_state }),
         _ => Err(PhoebusParseError::UnexpectedState),
     }
 }
@@ -367,44 +363,5 @@ fn log_parse_error(operation: &str, key: &Key, msg_text: &str) -> SyncOutcome {
     );
     SyncOutcome::Skipped {
         reason: SkipReason::MalformedMessage,
-    }
-}
-
-/// Handles when a message is not a command or a config.
-fn process_other(key: Key, msg_text: String) -> SyncOutcome {
-    debug!(
-        "Received Phoebus message that is not a config or a command. Treating it as non-sync Phoebus noise and doing nothing.\n Original message from Phoebus: {{ key: {key:?}, text: {msg_text} }}"
-    );
-    SyncOutcome::Ignored {
-        reason: IgnoreReason::StateNoise,
-    }
-}
-
-fn log_key_parse_outcome(key: &str, value: &str, error: &KeyParseError) -> SyncOutcome {
-    match error {
-        KeyParseError::UnsupportedOperation => {
-            debug!(
-                "Ignoring Phoebus runtime message because its key uses an untracked operation prefix.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
-            );
-            SyncOutcome::Ignored {
-                reason: IgnoreReason::StateNoise,
-            }
-        }
-        KeyParseError::MalformedStructure => {
-            warn!(
-                "Skipping malformed Phoebus runtime key: expected '<operation>:<display path>/<device>'.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
-            );
-            SyncOutcome::Skipped {
-                reason: SkipReason::MalformedMessage,
-            }
-        }
-        KeyParseError::EmptyDevice => {
-            warn!(
-                "Skipping Phoebus runtime key with empty device name. Empty device names are treated as invalid.\n Original message from Phoebus: {{ key: {key}, text: {value} }}"
-            );
-            SyncOutcome::Skipped {
-                reason: SkipReason::MalformedMessage,
-            }
-        }
     }
 }

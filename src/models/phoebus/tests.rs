@@ -4,6 +4,19 @@ use super::*;
 use crate::models::alarm::status::State;
 
 #[test]
+fn build_metadata_for_unmapped_device_creates_metadata_with_normalized_topic() {
+    let key = Key::parse("config:/path/to/alarm/device1").unwrap();
+
+    // Test with Command suffix
+    let metadata = PvMetadata::from_unmapped(&key, "testCommand");
+    assert_eq!(metadata.phoebus_topic, "test");
+
+    // Test without Command suffix
+    let metadata = PvMetadata::from_unmapped(&key, "test-topic");
+    assert_eq!(metadata.phoebus_topic, "test-topic");
+}
+
+#[test]
 fn serde_json_deserializes_config_enabled_as_string() {
     let expected = Config {
         enabled: Some(false.to_string()),
@@ -29,57 +42,6 @@ fn serde_json_deserializes_config_enabled_as_string() {
     test_input = "{ \"user\": \"\", \"host\": \"\" }";
     result = serde_json::from_str::<Config>(test_input).unwrap();
     assert_eq!(Config::default(), result);
-}
-
-#[test]
-fn should_normalize_config_enablement_variants() {
-    let config = Config {
-        enabled: None,
-        ..Config::default()
-    };
-    assert_eq!(
-        config.normalize_enablement(),
-        Ok(NormalizedEnablement::Bypassed)
-    );
-
-    let config = Config {
-        enabled: Some(false.to_string()),
-        ..Config::default()
-    };
-    assert_eq!(
-        config.normalize_enablement(),
-        Ok(NormalizedEnablement::Bypassed)
-    );
-
-    let config = Config {
-        enabled: Some(true.to_string()),
-        ..Config::default()
-    };
-    assert_eq!(
-        config.normalize_enablement(),
-        Ok(NormalizedEnablement::Active)
-    );
-
-    let timestamp = "2000-01-01T00:00:00.000Z";
-    let config = Config {
-        enabled: Some(timestamp.to_owned()),
-        ..Config::default()
-    };
-    assert_eq!(
-        config.normalize_enablement(),
-        Ok(NormalizedEnablement::SnoozedUntil(
-            DateTime::parse_from_rfc3339(timestamp).unwrap()
-        ))
-    );
-
-    let config = Config {
-        enabled: Some("Corrupted data".to_owned()),
-        ..Config::default()
-    };
-    assert_eq!(
-        config.normalize_enablement(),
-        Err(PhoebusParseError::MalformedMessage)
-    );
 }
 
 #[test]
@@ -172,14 +134,6 @@ fn should_get_cached_state_from_config() {
             wake: None
         }),
         result
-    );
-}
-
-#[test]
-fn should_get_err_string_for_unsupported_sync_action() {
-    assert_eq!(
-        "Controls state does not map to a supported Phoebus synchronization action",
-        Operation::unsupported_sync_action_error()
     );
 }
 

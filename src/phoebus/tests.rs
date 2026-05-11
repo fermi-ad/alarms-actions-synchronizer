@@ -14,6 +14,51 @@ use crate::models::alarm::status::State;
 use crate::models::phoebus::{Command, Config, Key, Operation, PvMetadata};
 use crate::utils::test_runner::{MessageOrigin, TestRunner, send_test_message};
 
+#[test]
+fn should_map_untracked_monitor_key_to_noise_ignored_outcome() {
+    assert_eq!(
+        map_key_parse_error(
+            "test",
+            "state:display/device",
+            "{}",
+            &KeyParseError::UnsupportedOperation,
+        ),
+        SyncOutcome::Ignored {
+            reason: IgnoreReason::StateNoise,
+        }
+    );
+}
+
+#[test]
+fn should_map_malformed_monitor_key_to_skipped_outcome() {
+    assert_eq!(
+        map_key_parse_error(
+            "test",
+            "malformed-key",
+            "{}",
+            &KeyParseError::MalformedStructure
+        ),
+        SyncOutcome::Skipped {
+            reason: SkipReason::MalformedMessage,
+        }
+    );
+}
+
+#[test]
+fn should_map_empty_device_monitor_key_to_skipped_outcome() {
+    assert_eq!(
+        map_key_parse_error(
+            "test",
+            "command:display/",
+            "{}",
+            &KeyParseError::EmptyDevice
+        ),
+        SyncOutcome::Skipped {
+            reason: SkipReason::MalformedMessage,
+        }
+    );
+}
+
 #[tokio::test]
 async fn should_not_sync_corrupted_command() {
     let test_instance =
@@ -286,37 +331,6 @@ async fn should_sync_valid_active_config_with_time() {
 }
 
 #[tokio::test]
-async fn should_sync_valid_active_config_with_true() {
-    let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
-    let sync = &test_instance.sync;
-
-    let alarm_states = Arc::clone(&sync.config.alarm_states);
-
-    let config = Config {
-        enabled: Some(true.to_string()),
-        ..Config::default()
-    };
-
-    let message = StringMessage::new(
-        Some(String::from("config:my/path/to/MyDevice")),
-        serde_json::to_string(&config).unwrap(),
-    );
-
-    test_instance
-        .has(message)
-        .results_in(async || {
-            alarm_states
-                .read()
-                .await
-                .get("MyDevice")
-                .is_some_and(|state| state.state == State::Unbypassed)
-        })
-        .await
-        .expect("The alarm state was not set to 'Unbypassed'");
-}
-
-#[tokio::test]
 async fn should_not_sync_corrupted_config_on_init() {
     let test_instance =
         TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
@@ -477,7 +491,7 @@ async fn should_not_sync_unexpected_enabled_states() {
 }
 
 #[tokio::test]
-async fn should_only_refresh_local_cache_for_active_config_until_controls_supports_it() {
+async fn should_sync_active_config() {
     let test_instance =
         TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;

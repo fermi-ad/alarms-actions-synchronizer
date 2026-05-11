@@ -22,43 +22,15 @@ async fn should_share_connection_manager_across_clones() {
 
 // --- ConnectionManager unit tests ---
 //
-// These tests exercise the connection lifecycle directly: initial creation, client reuse,
+// These tests exercise the connection lifecycle directly: initial creation,
 // reconnect after failure, duplicate reconnect suppression, and generation tracking.
-// They use `publish_client` to seed state and `current_generation` to observe it.
+// They use `publish_client` to seed state and observe it via `connection`.
 
 #[tokio::test]
 async fn should_start_with_no_connection() {
     let manager = ConnectionManager::new("http://127.0.0.1:1");
 
-    assert!(manager.current_generation().await.is_none());
-}
-
-#[tokio::test]
-async fn should_reuse_existing_client_when_already_connected() {
-    let manager = ConnectionManager::new("http://127.0.0.1:1");
-
-    // Seed a fake client at generation 1 (the first real connection generation; 0 is reserved as
-    // "never connected"). We use publish_client directly to simulate an already-established
-    // connection without needing a reachable host.
-    let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
-    let fake_client = AlarmCommandsClient::new(channel);
-    manager.publish_client(fake_client, 1).await;
-
-    // Now request_client should reuse the existing connection
-    let result = manager.request_client().await;
-
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().generation, Some(1));
-}
-
-#[tokio::test]
-async fn should_return_none_when_no_client_exists() {
-    let manager = ConnectionManager::new("http://127.0.0.1:1");
-
-    // No client seeded — get_or_connect_client will attempt to connect and fail
-    let result = manager.get_or_connect_client().await;
-
-    assert!(result.is_none());
+    assert!(manager.get_or_connect_client().await.is_none());
 }
 
 #[tokio::test]
@@ -68,13 +40,26 @@ async fn should_skip_reconnect_when_newer_generation_already_published() {
     // Seed a client at generation 1 (simulating another task already reconnected)
     let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
     let fake_client = AlarmCommandsClient::new(channel);
-    manager.publish_client(fake_client, 1).await;
+    manager
+        .publish_client(SharedConnectionState {
+            client: fake_client,
+            generation: 1,
+        })
+        .await;
 
     // Attempt reconnect claiming failure at generation 0 — should be skipped
-    let result = manager.reconnect_client(Some(0)).await;
+    let result = manager.reconnect_client(0).await;
 
     assert!(result.is_some());
-    assert_eq!(manager.current_generation().await, Some(1));
+    assert_eq!(
+        manager
+            .connection
+            .read()
+            .await
+            .as_ref()
+            .map(|s| s.generation),
+        Some(1)
+    );
 }
 
 #[tokio::test]
@@ -85,11 +70,16 @@ async fn should_attempt_reconnect_when_generation_matches_failed_generation() {
     // "never connected").
     let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
     let fake_client = AlarmCommandsClient::new(channel);
-    manager.publish_client(fake_client, 1).await;
+    manager
+        .publish_client(SharedConnectionState {
+            client: fake_client,
+            generation: 1,
+        })
+        .await;
 
     // Attempt reconnect claiming failure at generation 1 — should try to reconnect (and fail
     // because the host is unreachable)
-    let result = manager.reconnect_client(Some(1)).await;
+    let result = manager.reconnect_client(1).await;
 
     assert!(result.is_none());
 }

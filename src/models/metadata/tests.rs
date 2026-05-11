@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::models::phoebus::Key;
 
 #[tokio::test]
 async fn lookup_metadata_by_device_returns_none_when_not_present() {
@@ -28,20 +27,6 @@ async fn lookup_metadata_by_device_returns_metadata_when_present() {
     let result = scope.lookup_metadata_by_device("test-device").await;
 
     assert_eq!(result, Some(metadata));
-}
-
-#[test]
-fn build_metadata_from_config_creates_metadata_with_normalized_topic() {
-    let key = Key::parse("config:/path/to/alarm/device1").unwrap();
-    let config = Config::default();
-
-    // Test with Command suffix
-    let metadata = build_metadata_from_config(&key, &config, "testCommand");
-    assert_eq!(metadata.phoebus_topic, "test");
-
-    // Test without Command suffix
-    let metadata = build_metadata_from_config(&key, &config, "test-topic");
-    assert_eq!(metadata.phoebus_topic, "test-topic");
 }
 
 #[tokio::test]

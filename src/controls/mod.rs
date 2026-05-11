@@ -61,18 +61,6 @@ pub struct SyncImpl<P: Publisher> {
 }
 
 impl<P: Publisher> SyncImpl<P> {
-    /// Creates the shared observed-state policy for an incoming Controls alarm.
-    async fn get_last_observed_state(&self, device: &str) -> ObservedStatePolicy {
-        read_observed_state_policy(&self.alarm_states, device).await
-    }
-
-    /// Extracts the PV metadata record for the provided `device`.
-    ///
-    /// The presence of Phoebus metadata determines whether an EPICS device is in scope for synchronization.
-    async fn get_pv_metadata(&self, device: &str) -> Option<PvMetadata> {
-        self.metadata_scope.lookup_metadata_by_device(device).await
-    }
-
     /// Loops over elements of the [`Stream`] and processes them. Detects when a cancel has been invoked and terminates the process.
     async fn monitor(
         &self,
@@ -115,10 +103,7 @@ impl<P: Publisher> SyncImpl<P> {
 
         let message = match transform::controls_to_phoebus(controls_alarm, operation, pv_metadata) {
             Ok(message) => message,
-            Err(err) => {
-                error!(
-                    "Unable to create message to send to Phoebus.\n Cause: {err}\n Message from Controls: {controls_alarm:?}"
-                );
+            Err(_) => {
                 return OutboundSyncResult::Skipped {
                     reason: SkipReason::MalformedMessage,
                 };
@@ -157,7 +142,9 @@ impl<P: Publisher> SyncImpl<P> {
         match decide_controls_sync(
             &controls_alarm,
             previous_observed_state,
-            self.get_pv_metadata(&controls_alarm.device).await,
+            self.metadata_scope
+                .lookup_metadata_by_device(&controls_alarm.device)
+                .await,
         ) {
             ControlsInboundDecision::IgnoreNonSyncState => {
                 handle_non_sync_controls_state(&controls_alarm.device, &controls_alarm.state())
@@ -166,7 +153,7 @@ impl<P: Publisher> SyncImpl<P> {
                 handle_out_of_scope_decision(&controls_alarm.device)
             }
             ControlsInboundDecision::SuppressedByPolicy => {
-                handle_suppressed_by_policy(controls_alarm)
+                handle_suppressed_by_policy(&controls_alarm)
             }
             ControlsInboundDecision::SyncToPhoebus {
                 operation,
@@ -197,7 +184,8 @@ impl<P: Publisher> SyncImpl<P> {
                 controls_alarm.source(),
             ));
         }
-        let previous_observed_state = self.get_last_observed_state(&controls_alarm.device).await;
+        let previous_observed_state =
+            read_observed_state_policy(&self.alarm_states, &controls_alarm.device).await;
         let outcome = self
             .process_controls_message(controls_alarm, previous_observed_state)
             .await;
@@ -308,27 +296,26 @@ fn deserialize_status(msg: &StringMessage) -> Result<Status, ()> {
 fn decide_controls_sync(
     controls_alarm: &Status,
     previous_observed_state: ObservedStatePolicy,
-    pv_metadata: Option<PvMetadata>,
+    pv_metadata_opt: Option<PvMetadata>,
 ) -> ControlsInboundDecision {
-    let updated_state = CachedState::from(controls_alarm);
-    if previous_observed_state.suppresses_incoming(&updated_state) {
-        return ControlsInboundDecision::SuppressedByPolicy;
-    }
-
-    let operation_opt = transform::state_to_operation(updated_state.state);
-    let operation = match operation_opt {
-        Some(operation) => operation,
-        None => return ControlsInboundDecision::IgnoreNonSyncState,
+    let Some(pv_metadata) = pv_metadata_opt else {
+        return ControlsInboundDecision::OutOfScope;
     };
 
-    if let Some(pv_metadata) = pv_metadata {
+    let updated_state = CachedState::from(controls_alarm);
+    let operation_opt = transform::state_to_operation(updated_state.state);
+    let Some(operation) = operation_opt else {
+        return ControlsInboundDecision::IgnoreNonSyncState;
+    };
+
+    if previous_observed_state.suppresses_incoming(&updated_state) {
+        ControlsInboundDecision::SuppressedByPolicy
+    } else {
         ControlsInboundDecision::SyncToPhoebus {
             operation,
             pv_metadata,
             updated_state,
         }
-    } else {
-        ControlsInboundDecision::OutOfScope
     }
 }
 
@@ -360,7 +347,7 @@ fn handle_out_of_scope_decision(device: &str) -> SyncOutcome {
 }
 
 /// Logs a Controls alarm update that was suppressed by the observed-state policy and maps it to the public synchronization outcome.
-fn handle_suppressed_by_policy(controls_alarm: Status) -> SyncOutcome {
+fn handle_suppressed_by_policy(controls_alarm: &Status) -> SyncOutcome {
     debug!(
         "Got stale message for device {} that is suppressed by policy. Message will be dropped.\n Inbound message:\n{:?}",
         controls_alarm.device, controls_alarm
