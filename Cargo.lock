@@ -313,7 +313,7 @@ dependencies = [
 [[package]]
 name = "grpc-client-macro"
 version = "0.1.0"
-source = "git+https://github.com/fermi-ad/rust-grpc-lib?rev=12e375f296f14f9f0482300237b515c30f6d475c#12e375f296f14f9f0482300237b515c30f6d475c"
+source = "git+https://github.com/fermi-ad/rust-grpc-lib?tag=v2.0.0#d1e22ed537d9d77be8944651d202e85cdc6e90f9"
 dependencies = [
  "quote",
  "syn",
@@ -985,14 +985,12 @@ dependencies = [
 [[package]]
 name = "rust-grpc-lib"
 version = "2.0.0"
-source = "git+https://github.com/fermi-ad/rust-grpc-lib?rev=12e375f296f14f9f0482300237b515c30f6d475c#12e375f296f14f9f0482300237b515c30f6d475c"
+source = "git+https://github.com/fermi-ad/rust-grpc-lib?tag=v2.0.0#d1e22ed537d9d77be8944651d202e85cdc6e90f9"
 dependencies = [
  "grpc-client-macro",
- "prost",
  "protoc-bin-vendored",
  "rust-env-var-lib",
  "tonic",
- "tonic-prost",
  "tonic-prost-build",
 ]
 
