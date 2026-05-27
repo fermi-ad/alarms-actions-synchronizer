@@ -313,7 +313,7 @@ dependencies = [
 [[package]]
 name = "grpc-client-macro"
 version = "0.1.0"
-source = "git+https://github.com/fermi-ad/rust-grpc-lib?tag=v2.0.0#d1e22ed537d9d77be8944651d202e85cdc6e90f9"
+source = "git+https://github.com/fermi-ad/rust-grpc-lib?tag=v2.0.1#85345b83e8519c675ebd8c95d6a77ba7e816246f"
 dependencies = [
  "quote",
  "syn",
@@ -984,8 +984,8 @@ dependencies = [
 
 [[package]]
 name = "rust-grpc-lib"
-version = "2.0.0"
-source = "git+https://github.com/fermi-ad/rust-grpc-lib?tag=v2.0.0#d1e22ed537d9d77be8944651d202e85cdc6e90f9"
+version = "2.0.1"
+source = "git+https://github.com/fermi-ad/rust-grpc-lib?tag=v2.0.1#85345b83e8519c675ebd8c95d6a77ba7e816246f"
 dependencies = [
  "grpc-client-macro",
  "protoc-bin-vendored",
