@@ -7,5 +7,8 @@ KAFKA_CONNECTION_SECONDS = "1"
 PHOEBUS_HOST = "test host"
 PHOEBUS_TOPICS = "topic1,topic2"
 
+# Variables to configure the structs provided by rust-grpc-lib 
+RUST_GRPC_LIB_TYPE_ATTRIBUTES = ".google.protobuf=#[derive(serde::Deserialize, serde::Serialize)];.services.alarm_commands=#[derive(serde::Deserialize, serde::Serialize)];.common.alarm=#[derive(serde::Deserialize, serde::Serialize)]"
+
 [net]
 git-fetch-with-cli = true

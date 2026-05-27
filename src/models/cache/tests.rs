@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::*;
-use crate::models::alarm::status::{Source, State};
-use crate::models::generated::Timestamp;
+use crate::models::proto::common::alarm::status::{Source, State};
+use crate::models::proto::google::protobuf::Timestamp;
 
 fn make_cache() -> AlarmStateCache {
     Arc::new(RwLock::new(HashMap::new()))

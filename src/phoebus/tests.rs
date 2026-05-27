@@ -10,8 +10,8 @@ use rust_pubsub_lib::{Message, StringMessage};
 
 use super::*;
 use crate::models::CachedState;
-use crate::models::alarm::status::State;
 use crate::models::phoebus::{Command, Config, Key, Operation, PvMetadata};
+use crate::models::proto::common::alarm::status::State;
 use crate::utils::test_runner::{MessageOrigin, TestRunner, send_test_message};
 
 #[test]

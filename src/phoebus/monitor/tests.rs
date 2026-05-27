@@ -1,10 +1,10 @@
 use chrono::{Timelike, Utc};
 
 use super::*;
-use crate::models::alarm::status::State;
-use crate::models::generated::Timestamp;
 use crate::models::outcomes::AttemptResult;
 use crate::models::phoebus::{Config, Key, Operation, PvMetadata};
+use crate::models::proto::common::alarm::status::State;
+use crate::models::proto::google::protobuf::Timestamp;
 use crate::models::{
     ACK_COMMAND, CachedState, ObservedStatePolicy, OutboundSyncResult, SkipReason, SyncDirection,
     SyncOutcome,

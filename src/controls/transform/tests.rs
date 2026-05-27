@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::models::generated::Timestamp;
 use crate::models::phoebus::Config;
+use crate::models::proto::google::protobuf::Timestamp;
 
 #[test]
 fn should_convert_command() {
