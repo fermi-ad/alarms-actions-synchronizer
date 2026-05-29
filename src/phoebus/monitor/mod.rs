@@ -24,9 +24,9 @@ use tokio_stream::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::models::alarm::status::State;
 use crate::models::metadata::MetadataScope;
 use crate::models::phoebus::{Command, Config, Key, Operation, PhoebusParseError, PvMetadata};
+use crate::models::proto::common::alarm::status::State;
 use crate::models::{
     ACK_COMMAND, AlarmStateCache, CachedState, IgnoreReason, ObservedStatePolicy, SkipReason,
     SyncDirection, SyncOutcome, SynchronizerConfig, read_observed_state_policy, record_alarm_state,

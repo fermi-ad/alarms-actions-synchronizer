@@ -1,3 +1,0 @@
-[submodule "extern/interfaces"]
-	path = extern/interfaces
-	url = https://github.com/fermi-ad/interface-definitions

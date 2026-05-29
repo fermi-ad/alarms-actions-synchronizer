@@ -1,7 +1,7 @@
 //! Phoebus Models Module Tests
 
 use super::*;
-use crate::models::alarm::status::State;
+use crate::models::proto::common::alarm::status::State;
 
 #[test]
 fn build_metadata_for_unmapped_device_creates_metadata_with_normalized_topic() {

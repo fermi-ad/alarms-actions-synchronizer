@@ -23,10 +23,10 @@ use tokio_stream::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::models::alarm::Status;
-use crate::models::alarm::status::{Source, State};
 use crate::models::metadata::MetadataScope;
 use crate::models::phoebus::{Operation, PvMetadata};
+use crate::models::proto::common::alarm::Status;
+use crate::models::proto::common::alarm::status::{Source, State};
 use crate::models::{
     AlarmStateCache, CachedState, IgnoreReason, ObservedStatePolicy, OutboundSyncResult,
     RuntimeSyncFactory, SkipReason, SyncDirection, SyncOutcome, Synchronizer, SynchronizerConfig,

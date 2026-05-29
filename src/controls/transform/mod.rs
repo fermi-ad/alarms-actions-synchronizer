@@ -8,9 +8,9 @@ use rust_pubsub_lib::{Message, StringMessage};
 use tracing::error;
 
 use crate::models::ACK_COMMAND;
-use crate::models::alarm::Status;
-use crate::models::alarm::status::State;
 use crate::models::phoebus::{Command, Config, NormalizedEnablement, Operation, PvMetadata};
+use crate::models::proto::common::alarm::Status;
+use crate::models::proto::common::alarm::status::State;
 use crate::utils::get_command_topic;
 
 #[cfg(test)]

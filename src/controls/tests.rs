@@ -6,9 +6,10 @@ use std::sync::Arc;
 use rust_pubsub_lib::{KafkaPublisher, KafkaSubscriber, StringMessage};
 
 use super::*;
-use crate::models::alarm::status::State;
 use crate::models::outcomes::AttemptResult;
 use crate::models::phoebus::{Command, Config, Operation, PvMetadata};
+use crate::models::proto::common::alarm::status::State;
+use crate::models::proto::google::protobuf::Timestamp;
 use crate::models::{
     ACK_COMMAND, CachedState, SkipReason, SyncDirection, SyncOutcome, read_observed_state_policy,
     record_alarm_state,
@@ -299,7 +300,7 @@ fn should_map_failed_controls_outbound_result_to_attempted_failed_outcome() {
 async fn should_read_controls_policy_duplicate_only_for_exact_match() {
     let test_instance = get_test_instance().await;
     let sync = &test_instance.sync;
-    let wake = Some(crate::models::generated::Timestamp {
+    let wake = Some(Timestamp {
         seconds: 42,
         nanos: 8,
     });

@@ -16,7 +16,6 @@ jobs:
       contents: write
       pull-requests: write
     with:
-      pull-git-submodules: true
       references-internal-git-repo: true
       static-dependencies: 'libcurl4-openssl-dev libsasl2-dev'
 
@@ -29,6 +28,5 @@ jobs:
       contents: write
       pull-requests: write
     with:
-      pull-git-submodules: true
       references-internal-git-repo: true
       static-dependencies: 'libcurl4-openssl-dev libsasl2-dev'

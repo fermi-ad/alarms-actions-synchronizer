@@ -14,9 +14,9 @@
 use crate::{
     models::{
         AlarmStateCache, CachedState, IgnoreReason, SkipReason, SyncOutcome,
-        alarm::status::State,
         metadata::MetadataScope,
         phoebus::{Config, Key, Operation, PvMetadata},
+        proto::common::alarm::status::State,
         record_alarm_state, record_startup_state_evidence,
     },
     phoebus::map_key_parse_error,

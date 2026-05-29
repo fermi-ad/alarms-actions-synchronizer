@@ -1,28 +1,4 @@
-use std::{env, io::Error};
-
-fn main() -> Result<(), Error> {
-    let protoc_path = protoc_bin_vendored::protoc_bin_path().expect("failed to find protoc");
-    unsafe {
-        env::set_var("PROTOC", protoc_path);
-    }
-
-    tonic_prost_build::configure()
-        .build_server(false)
-        .type_attribute(
-            ".google.protobuf",
-            "#[derive(serde::Serialize, serde::Deserialize)]",
-        )
-        .compile_well_known_types(true)
-        .type_attribute(
-            ".services.alarm_commands",
-            "#[derive(serde::Serialize, serde::Deserialize)]",
-        )
-        .type_attribute(
-            ".common.alarm",
-            "#[derive(serde::Serialize, serde::Deserialize)]",
-        )
-        .compile_protos(
-            &["extern/interfaces/proto/controls/service/grpc-alarm-commands/v1/alarm_commands.proto", "extern/interfaces/proto/controls/common/v1/alarm.proto"], 
-            &["extern/interfaces"]
-        )
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    rust_grpc_lib::build_support::generate_protos()?;
+    Ok(())
 }

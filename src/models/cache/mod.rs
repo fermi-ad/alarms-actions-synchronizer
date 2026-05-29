@@ -10,9 +10,9 @@ use chrono::{DateTime, TimeZone, Utc};
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::models::alarm::Status;
-use crate::models::alarm::status::State;
-use crate::models::generated::Timestamp;
+use crate::models::proto::common::alarm::Status;
+use crate::models::proto::common::alarm::status::State;
+use crate::models::proto::google::protobuf::Timestamp;
 
 #[cfg(test)]
 mod tests;
