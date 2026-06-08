@@ -14,13 +14,13 @@ impl Publisher for MockPubSub {
         unimplemented!()
     }
 
-    async fn publish<T, M: Message<T>>(&self, _: M) -> Result<(), PubSubError> {
+    async fn publish<M: Message>(&self, _: M) -> Result<(), PubSubError> {
         unimplemented!()
     }
 }
 #[async_trait::async_trait]
 impl Snapshot for MockPubSub {
-    async fn get<T, M: Message<T>>(_: String, _: String) -> Result<Vec<M>, PubSubError> {
+    async fn get<M: Message>(_: String, _: String) -> Result<Vec<M>, PubSubError> {
         unimplemented!()
     }
 }
@@ -30,7 +30,7 @@ impl Subscriber for MockPubSub {
         unimplemented!()
     }
 
-    async fn get_stream<T, M: Message<T>>(
+    async fn get_stream<M: Message>(
         &mut self,
     ) -> Result<impl Stream<Item = Result<M, PubSubError>>, PubSubError> {
         Ok(tokio_stream::empty())
@@ -87,10 +87,5 @@ async fn should_begin_sync() {
 
 #[tokio::test]
 async fn mock_pubsub_stream() {
-    assert!(
-        MockPubSub
-            .get_stream::<String, StringMessage>()
-            .await
-            .is_ok()
-    );
+    assert!(MockPubSub.get_stream::<StringMessage>().await.is_ok());
 }

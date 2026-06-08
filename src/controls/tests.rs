@@ -16,7 +16,7 @@ use crate::models::{
 };
 use crate::utils::test_runner::{MessageOrigin, TestRunner};
 
-type ControlsTestRunner = TestRunner<StringMessage, String, SyncImpl<KafkaPublisher>>;
+type ControlsTestRunner = TestRunner<StringMessage, SyncImpl<KafkaPublisher>>;
 
 async fn get_test_instance() -> ControlsTestRunner {
     ControlsTestRunner::check_when(MessageOrigin::Controls).await
@@ -56,10 +56,7 @@ async fn should_continue_when_no_cached_alarm_state() {
         test_instance.harness.host().await,
         get_command_topic(&phoebus_topic),
     );
-    let mut stream = receiver
-        .get_stream::<String, StringMessage>()
-        .await
-        .unwrap();
+    let mut stream = receiver.get_stream::<StringMessage>().await.unwrap();
 
     test_instance
         .has(message)

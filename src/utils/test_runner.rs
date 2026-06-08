@@ -4,7 +4,6 @@
 //! [`TestRunner`] descibes the common flow of a test case: some data appears on a given
 //! Kafka topic and the [`Synchronizer`] under test is expected to respond in a certain way.
 
-use std::marker::PhantomData;
 use std::time::Duration;
 use std::{collections::HashMap, error::Error};
 
@@ -49,9 +48,9 @@ fn get_mock_sync_config() -> SynchronizerConfig {
 }
 
 /// A helper tool that simulates a [`Synchronizer`] receiving the provided [`Message`] and checks that the expected behavior ensues.
-pub struct TestRunner<M, N, T>
+pub struct TestRunner<M, T>
 where
-    M: Message<N>,
+    M: Message,
     T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static,
 {
     /// The cancellation token used to stop the [`Synchronizer`] under test after the test completes.
@@ -61,16 +60,14 @@ where
     pub harness: KafkaTestHarness,
     /// The message to send that initiates the behavior being tested.
     message: Option<M>,
-    /// Phantom marker to carry the message value type `N` without storing a value of that type.
-    _message_type: PhantomData<N>,
     /// The topic on which the test message will be published.
     send_topic: String,
     /// The [`Synchronizer`] instance being tested.
     pub sync: T,
 }
 
-impl<M: Message<N>, N, T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static>
-    TestRunner<M, N, T>
+impl<M: Message, T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send + Sync + 'static>
+    TestRunner<M, T>
 {
     /// Generates a [`TestRunner`] for a [`Synchronizer`] that listens to messages from [`MessageOrigin`].
     ///
@@ -97,7 +94,6 @@ impl<M: Message<N>, N, T: Synchronizer<KafkaPublisher, KafkaSubscriber> + Send +
             test_config: config,
             harness,
             message: None,
-            _message_type: PhantomData,
             send_topic,
             sync,
         }
@@ -189,7 +185,7 @@ fn prioritized_send_topic(origin: MessageOrigin, config: &SynchronizerConfig) ->
 }
 
 /// Produces the specified [`Message`] on the [`Harness`]'s host and topic.
-pub async fn send_test_message<N, M: Message<N>>(
+pub async fn send_test_message<M: Message>(
     harness: &KafkaTestHarness,
     message: M,
     send_topic: String,
@@ -200,7 +196,7 @@ pub async fn send_test_message<N, M: Message<N>>(
 }
 
 /// Sends the test message and waits for the provided condition to be satisfied.
-async fn do_test<N, M: Message<N>>(
+async fn do_test<M: Message>(
     harness: KafkaTestHarness,
     message: M,
     send_topic: String,

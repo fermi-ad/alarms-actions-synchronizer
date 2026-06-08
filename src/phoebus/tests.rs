@@ -62,7 +62,7 @@ fn should_map_empty_device_monitor_key_to_skipped_outcome() {
 #[tokio::test]
 async fn should_not_sync_corrupted_command() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
     let message = StringMessage::new(
         Some(String::from("command:path/to/MyDevice")),
@@ -95,7 +95,7 @@ async fn should_not_sync_corrupted_command() {
 #[tokio::test]
 async fn should_not_sync_corrupted_command_after_init() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
     let message = StringMessage::new(
         Some(String::from("command:path/to/MyDevice")),
@@ -111,7 +111,7 @@ async fn should_not_sync_corrupted_command_after_init() {
 #[tokio::test]
 async fn should_not_sync_duplicate_acknowledgement_commands() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
 
     test_instance.test_config.alarm_states.write().await.insert(
@@ -149,7 +149,7 @@ async fn should_not_sync_duplicate_acknowledgement_commands() {
 #[tokio::test]
 async fn should_sync_valid_bypass_config_with_false() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;
 
     let alarm_states = Arc::clone(&sync.config.alarm_states);
@@ -197,7 +197,7 @@ async fn should_sync_valid_bypass_config_with_false() {
 #[tokio::test]
 async fn should_sync_valid_bypass_config_with_none() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;
 
     let alarm_states = Arc::clone(&sync.config.alarm_states);
@@ -242,7 +242,7 @@ async fn should_sync_valid_bypass_config_with_none() {
 #[tokio::test]
 async fn should_sync_valid_snooze_config() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;
 
     let alarm_states = Arc::clone(&sync.config.alarm_states);
@@ -290,7 +290,7 @@ async fn should_sync_valid_snooze_config() {
 #[tokio::test]
 async fn should_sync_valid_active_config_with_time() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;
 
     let alarm_states = Arc::clone(&sync.config.alarm_states);
@@ -333,7 +333,7 @@ async fn should_sync_valid_active_config_with_time() {
 #[tokio::test]
 async fn should_not_sync_corrupted_config_on_init() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let metadata_scope = test_instance.test_config.metadata_scope.clone();
     let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
     let message = StringMessage::new(
@@ -370,7 +370,7 @@ async fn should_not_sync_corrupted_config_on_init() {
 #[tokio::test]
 async fn should_not_sync_corrupted_config_after_init() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let metadata_scope = test_instance.test_config.metadata_scope.clone();
     let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
     let message = StringMessage::new(
@@ -395,7 +395,7 @@ async fn should_not_sync_corrupted_config_after_init() {
 #[tokio::test]
 async fn should_not_sync_duplicated_config() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let metadata_scope = test_instance.test_config.metadata_scope.clone();
     let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
 
@@ -439,7 +439,7 @@ async fn should_not_sync_duplicated_config() {
 #[tokio::test]
 async fn should_not_sync_unexpected_enabled_states() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let metadata_scope = test_instance.test_config.metadata_scope.clone();
     let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
 
@@ -493,7 +493,7 @@ async fn should_not_sync_unexpected_enabled_states() {
 #[tokio::test]
 async fn should_sync_active_config() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;
 
     let metadata_scope = sync.config.metadata_scope.clone();
@@ -558,7 +558,7 @@ async fn should_sync_active_config() {
 #[tokio::test]
 async fn should_not_sync_already_bypassed_config() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let metadata_scope = test_instance.test_config.metadata_scope.clone();
     let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
 
@@ -618,7 +618,7 @@ async fn should_not_sync_already_bypassed_config() {
 #[tracing_test::traced_test]
 async fn should_add_new_device_to_scope_from_runtime_config() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let sync = &test_instance.sync;
 
     let metadata_scope = sync.config.metadata_scope.clone();
@@ -660,7 +660,7 @@ async fn should_add_new_device_to_scope_from_runtime_config() {
 #[tokio::test]
 async fn should_not_sync_unknown_operations() {
     let test_instance =
-        TestRunner::<StringMessage, String, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
+        TestRunner::<StringMessage, SyncImpl>::check_when(MessageOrigin::Phoebus).await;
     let alarm_states = Arc::clone(&test_instance.test_config.alarm_states);
 
     // Pre-seed a known state so we can verify it is preserved (not overwritten) by the unknown-operation message.
