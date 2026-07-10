@@ -5,34 +5,32 @@ An application to watch the Controls and Phoebus alarms servers and pass user ac
 ## Architecture
 
 ```mermaid
-C4Context
-    title Alarms Actions Synchronizer — System Context
+flowchart TB
+    subgraph external["External systems"]
+        CK["Controls Kafka\n(EPICS + ACNET alarm status)"]
+        PK["Phoebus Kafka\n(config / state / command topics)"]
+        GK["Controls gRPC\nAlarms Service"]
+    end
 
-    Person(user, "Operator", "Issues alarm actions (bypass, snooze, acknowledge) via either UI")
+    subgraph sync["alarms-actions-synchronizer (this service)"]
+        direction TB
+        CS["controls::SyncImpl\nKafka subscriber → Kafka publisher"]
+        PS["phoebus::SyncImpl\nKafka snapshot + subscriber → gRPC client"]
+        PVC[("PvCache\nin-scope EPICS device set")]
+        ASC[("AlarmStateCache\nlatest observed state\nper device")]
+    end
 
-    System_Boundary(sync, "alarms-actions-synchronizer") {
-        Container(controls_sync, "controls::SyncImpl", "Tokio task", "Subscribes to Controls Kafka; mirrors EPICS alarm actions (bypass, snooze, ack) into Phoebus Kafka")
-        Container(phoebus_sync, "phoebus::SyncImpl", "Tokio task", "Hydrates from Phoebus Kafka at startup; monitors Phoebus Kafka at runtime; mirrors user intent into Controls via gRPC")
-        ContainerDb(pv_cache, "PvCache", "Arc<RwLock<HashMap>>", "Runtime record of in-scope EPICS devices, keyed by Phoebus config metadata")
-        ContainerDb(state_cache, "AlarmStateCache", "Arc<RwLock<HashMap>>", "Latest observed alarm-handling state per device; used for loop prevention and duplicate suppression")
-    }
+    CK -->|"EPICS alarm status (protobuf JSON)"| CS
+    CS -->|"bypass / snooze / ack\n(Phoebus JSON)"| PK
 
-    System(controls_kafka, "Controls Kafka", "Streams Controls alarm status updates (EPICS + ACNET)")
-    System(phoebus_kafka, "Phoebus Kafka", "Streams Phoebus config, state, and command topic messages")
-    System(controls_grpc, "Controls gRPC Alarms Service", "Accepts acknowledge, bypass, snooze, and activate commands for EPICS devices")
+    PK -->|"startup snapshot\n(config + state messages)"| PS
+    PK -->|"runtime config + command messages"| PS
+    PS -->|"acknowledge / bypass\n/ snooze / activate RPC"| GK
 
-    Rel(user, controls_kafka, "Triggers alarm actions via Controls UI")
-    Rel(user, phoebus_kafka, "Triggers alarm actions via Phoebus UI")
-
-    Rel(controls_sync, controls_kafka, "Subscribes (KafkaSubscriber)", "Kafka")
-    Rel(controls_sync, phoebus_kafka, "Publishes mirrored actions (KafkaPublisher)", "Kafka JSON")
-    Rel(controls_sync, pv_cache, "Reads in-scope device set")
-    Rel(controls_sync, state_cache, "Reads + writes latest observed state")
-
-    Rel(phoebus_sync, phoebus_kafka, "Snapshot at startup + subscribes at runtime (KafkaSubscriber)", "Kafka")
-    Rel(phoebus_sync, controls_grpc, "Issues acknowledge / bypass / snooze / activate RPCs (ControlsClient)", "gRPC")
-    Rel(phoebus_sync, pv_cache, "Reads + writes in-scope device set")
-    Rel(phoebus_sync, state_cache, "Reads + writes latest observed state")
+    CS <-->|"scope lookup"| PVC
+    CS <-->|"loop prevention\n& duplicate suppression"| ASC
+    PS <-->|"device discovery\n& scope updates"| PVC
+    PS <-->|"loop prevention\n& duplicate suppression"| ASC
 ```
 
 ### Data-flow summary
