@@ -2,6 +2,71 @@
 
 An application to watch the Controls and Phoebus alarms servers and pass user actions between them.
 
+## Architecture
+
+```mermaid
+C4Context
+    title Alarms Actions Synchronizer — System Context
+
+    Person(user, "Operator", "Issues alarm actions (bypass, snooze, acknowledge) via either UI")
+
+    System_Boundary(sync, "alarms-actions-synchronizer") {
+        Container(controls_sync, "controls::SyncImpl", "Tokio task", "Subscribes to Controls Kafka; mirrors EPICS alarm actions (bypass, snooze, ack) into Phoebus Kafka")
+        Container(phoebus_sync, "phoebus::SyncImpl", "Tokio task", "Hydrates from Phoebus Kafka at startup; monitors Phoebus Kafka at runtime; mirrors user intent into Controls via gRPC")
+        ContainerDb(pv_cache, "PvCache", "Arc<RwLock<HashMap>>", "Runtime record of in-scope EPICS devices, keyed by Phoebus config metadata")
+        ContainerDb(state_cache, "AlarmStateCache", "Arc<RwLock<HashMap>>", "Latest observed alarm-handling state per device; used for loop prevention and duplicate suppression")
+    }
+
+    System(controls_kafka, "Controls Kafka", "Streams Controls alarm status updates (EPICS + ACNET)")
+    System(phoebus_kafka, "Phoebus Kafka", "Streams Phoebus config, state, and command topic messages")
+    System(controls_grpc, "Controls gRPC Alarms Service", "Accepts acknowledge, bypass, snooze, and activate commands for EPICS devices")
+
+    Rel(user, controls_kafka, "Triggers alarm actions via Controls UI")
+    Rel(user, phoebus_kafka, "Triggers alarm actions via Phoebus UI")
+
+    Rel(controls_sync, controls_kafka, "Subscribes (KafkaSubscriber)", "Kafka")
+    Rel(controls_sync, phoebus_kafka, "Publishes mirrored actions (KafkaPublisher)", "Kafka JSON")
+    Rel(controls_sync, pv_cache, "Reads in-scope device set")
+    Rel(controls_sync, state_cache, "Reads + writes latest observed state")
+
+    Rel(phoebus_sync, phoebus_kafka, "Snapshot at startup + subscribes at runtime (KafkaSubscriber)", "Kafka")
+    Rel(phoebus_sync, controls_grpc, "Issues acknowledge / bypass / snooze / activate RPCs (ControlsClient)", "gRPC")
+    Rel(phoebus_sync, pv_cache, "Reads + writes in-scope device set")
+    Rel(phoebus_sync, state_cache, "Reads + writes latest observed state")
+```
+
+### Data-flow summary
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant CK as Controls Kafka
+    participant CS as controls::SyncImpl
+    participant PK as Phoebus Kafka
+    participant PS as phoebus::SyncImpl
+    participant GK as Controls gRPC
+
+    Note over PS,PK: Startup — snapshot hydration
+    PS->>PK: KafkaSnapshot.get() for each topic
+    PK-->>PS: config + state messages
+    PS->>PS: populate PvCache & AlarmStateCache
+
+    Note over CS,PK: Runtime — Controls → Phoebus
+    Op->>CK: alarm action (EPICS device)
+    CK->>CS: StringMessage (Status proto)
+    CS->>CS: filter EPICS, check PvCache scope
+    CS->>CS: check AlarmStateCache (loop prevention)
+    CS->>PK: publish Phoebus command/config JSON
+
+    Note over PS,GK: Runtime — Phoebus → Controls
+    Op->>PK: alarm action (config / command message)
+    PK->>PS: StringMessage (Phoebus JSON)
+    PS->>PS: parse key, classify operation
+    PS->>PS: check AlarmStateCache (duplicate suppression)
+    PS->>GK: acknowledge / bypass / snooze / activate RPC
+    PS->>PS: update AlarmStateCache
+```
+
 ## Architecture notes
 
 This binary runs two long-lived synchronizers in parallel:
