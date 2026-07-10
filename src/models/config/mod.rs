@@ -15,23 +15,21 @@ use crate::models::cache::CachedState;
 use crate::models::metadata::MetadataScope;
 
 /// A trait to describe the basic functions of a synchronization process.
-#[async_trait::async_trait]
 pub trait Synchronizer<P: Publisher, S: Subscriber> {
     /// Constructs a [`Synchronizer`] instance from the provided [`SynchronizerConfig`] instance.
     fn new(config: SynchronizerConfig) -> Self;
 
     /// Kicks off the async process to monitor for alarm updates that need synchronization.
-    async fn synchronize<SNAP: Snapshot>(self);
+    fn synchronize<SNAP: Snapshot>(self) -> impl Future<Output = ()> + Send; // `impl Future<...> + Send` is required here because `async fn` in traits cannot yet assert `Send` bounds directly
 }
 
 /// A narrower abstraction for synchronizers that run in the application's concrete Kafka runtime.
-#[async_trait::async_trait]
 pub trait RuntimeSyncFactory: Sized {
     /// Constructs a runtime synchronizer from the shared configuration.
     fn new(config: SynchronizerConfig) -> Self;
 
     /// Runs the synchronizer with the concrete Kafka publisher/subscriber/snapshot types used in production.
-    async fn run(self);
+    fn run(self) -> impl Future<Output = ()> + Send; // `impl Future<...> + Send` is required here because `async fn` in traits cannot yet assert `Send` bounds directly
 }
 
 /// Configuration data to initialize the synchronizer processes.

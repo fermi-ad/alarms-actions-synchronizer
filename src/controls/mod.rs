@@ -15,11 +15,11 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use rust_pubsub_lib::{
-    KafkaPublisher, KafkaSnapshot, KafkaSubscriber, Message, PubSubError, Publisher, Snapshot,
+    KafkaPublisher, KafkaSnapshot, KafkaSubscriber, Message, MessageStream, Publisher, Snapshot,
     StringMessage, Subscriber,
 };
 use tokio::time::sleep;
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -61,22 +61,19 @@ pub struct SyncImpl<P: Publisher> {
 }
 
 impl<P: Publisher> SyncImpl<P> {
-    /// Loops over elements of the [`Stream`] and processes them. Detects when a cancel has been invoked and terminates the process.
-    async fn monitor(
-        &self,
-        mut controls_stream: impl Stream<Item = Result<StringMessage, PubSubError>> + Unpin + Send,
-    ) {
+    /// Loops over elements of the [`MessageStream`] and processes them. Detects when a cancel has been invoked and terminates the process.
+    async fn monitor(&self, mut controls_stream: MessageStream<StringMessage>) {
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => break,
-                stream_result = controls_stream.next() => {
-                    match stream_result {
-                        Some(item) => self.process_stream_item(item).await,
+                stream_item = controls_stream.next() => {
+                    let _ = match stream_item {
+                        Some(msg) => self.process_runtime_message(msg).await,
                         None => {
                             warn!("Stream from Controls closed itself. Initiating new connection.");
-                            break;
+                            break
                         }
-                    }
+                    };
                 }
             }
         }
@@ -191,21 +188,8 @@ impl<P: Publisher> SyncImpl<P> {
             .await;
         Ok(outcome)
     }
-
-    /// Extracts the [`Message`] from the item retrieved from the Controls stream, or handles any errors.
-    async fn process_stream_item(&self, item: Result<StringMessage, PubSubError>) {
-        match item {
-            Ok(msg) => {
-                let _ = self.process_runtime_message(msg).await;
-            }
-            Err(e) => {
-                warn!("Error receiving message from Controls Kafka.\n  Cause: {e:?}");
-            }
-        }
-    }
 }
 
-#[async_trait::async_trait]
 impl<P: Publisher + Send + Sync, S: Subscriber + Send + Sync> Synchronizer<P, S> for SyncImpl<P> {
     /// Constructs a [`SyncImpl`] from the provided [`SynchronizerConfig`], initializing Phoebus publishers for each configured topic.
     fn new(config: SynchronizerConfig) -> Self {
@@ -236,11 +220,9 @@ impl<P: Publisher + Send + Sync, S: Subscriber + Send + Sync> Synchronizer<P, S>
     async fn synchronize<SNAP: Snapshot>(self) {
         info!("Starting Controls-to-Phoebus Synchronizer");
         loop {
-            let mut controls_sub = S::new(self.controls_host.clone(), self.controls_topic.clone());
-            match controls_sub.get_stream().await {
-                Ok(controls_stream) => self.monitor(controls_stream).await,
-                Err(e) => error!("Failed to get Controls alarms stream: {e}"),
-            }
+            let controls_sub = S::new(self.controls_host.clone(), self.controls_topic.clone());
+            let controls_stream = controls_sub.get_stream().await;
+            self.monitor(controls_stream).await;
 
             if self.cancel_token.is_cancelled() {
                 return;
@@ -251,7 +233,6 @@ impl<P: Publisher + Send + Sync, S: Subscriber + Send + Sync> Synchronizer<P, S>
     }
 }
 
-#[async_trait::async_trait]
 impl RuntimeSyncFactory for SyncImpl<KafkaPublisher> {
     /// Constructs a runtime [`SyncImpl`] using the concrete Kafka publisher and subscriber types.
     fn new(config: SynchronizerConfig) -> Self {

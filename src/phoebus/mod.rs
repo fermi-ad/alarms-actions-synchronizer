@@ -29,7 +29,6 @@ pub struct SyncImpl {
     config: SynchronizerConfig,
 }
 
-#[async_trait::async_trait]
 impl<P: Publisher, S: Subscriber + Send + Sync + 'static> Synchronizer<P, S> for SyncImpl {
     fn new(config: SynchronizerConfig) -> Self {
         SyncImpl { config }
@@ -67,7 +66,6 @@ impl<P: Publisher, S: Subscriber + Send + Sync + 'static> Synchronizer<P, S> for
     }
 }
 
-#[async_trait::async_trait]
 impl RuntimeSyncFactory for SyncImpl {
     fn new(config: SynchronizerConfig) -> Self {
         // Use the fully-qualified syntax to disambiguate which `new` method we're calling

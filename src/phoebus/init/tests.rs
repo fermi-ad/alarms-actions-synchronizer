@@ -10,7 +10,6 @@ use super::*;
 
 #[derive(Debug)]
 struct ErroringSnapshot;
-#[async_trait::async_trait]
 impl Snapshot for ErroringSnapshot {
     async fn get<M: Message>(_: String, _: String) -> Result<Vec<M>, PubSubError> {
         Err(PubSubError::default())
@@ -19,7 +18,6 @@ impl Snapshot for ErroringSnapshot {
 
 #[derive(Debug)]
 struct PopulatedSnapshot;
-#[async_trait::async_trait]
 impl Snapshot for PopulatedSnapshot {
     async fn get<M: Message>(_: String, _: String) -> Result<Vec<M>, PubSubError> {
         Ok(generate_test_messages()

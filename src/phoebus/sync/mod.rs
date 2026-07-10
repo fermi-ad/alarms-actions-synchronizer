@@ -131,13 +131,11 @@ impl ControlsClient {
 ///
 /// Allows [`ControlsClient::execute_command`] to be generic over the specific request type
 /// without duplicating the retry and reconnect logic for each command variant.
-#[async_trait::async_trait]
 trait CommandRequest<Request> {
     /// Sends the provided request to the Controls alarms service.
     async fn send_request(&mut self, request: Request) -> Result<(), tonic::Status>;
 }
 
-#[async_trait::async_trait]
 impl CommandRequest<AcknowledgeRequest> for AlarmCommandsClient<Channel> {
     async fn send_request(&mut self, request: AcknowledgeRequest) -> Result<(), tonic::Status> {
         self.acknowledge(request).await?;
@@ -145,7 +143,6 @@ impl CommandRequest<AcknowledgeRequest> for AlarmCommandsClient<Channel> {
     }
 }
 
-#[async_trait::async_trait]
 impl CommandRequest<ActivateRequest> for AlarmCommandsClient<Channel> {
     async fn send_request(&mut self, request: ActivateRequest) -> Result<(), tonic::Status> {
         self.activate(request).await?;
@@ -153,7 +150,6 @@ impl CommandRequest<ActivateRequest> for AlarmCommandsClient<Channel> {
     }
 }
 
-#[async_trait::async_trait]
 impl CommandRequest<BypassRequest> for AlarmCommandsClient<Channel> {
     async fn send_request(&mut self, request: BypassRequest) -> Result<(), tonic::Status> {
         self.bypass(request).await?;
@@ -161,7 +157,6 @@ impl CommandRequest<BypassRequest> for AlarmCommandsClient<Channel> {
     }
 }
 
-#[async_trait::async_trait]
 impl CommandRequest<SnoozeRequest> for AlarmCommandsClient<Channel> {
     async fn send_request(&mut self, request: SnoozeRequest) -> Result<(), tonic::Status> {
         self.snooze(request).await?;

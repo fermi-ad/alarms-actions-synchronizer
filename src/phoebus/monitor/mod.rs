@@ -18,9 +18,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rust_pubsub_lib::{Message, PubSubError, StringMessage, Subscriber};
+use rust_pubsub_lib::{Message, MessageStream, StringMessage, Subscriber};
 use tokio::time::sleep;
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -79,20 +79,14 @@ impl Monitor {
     pub async fn start<S: Subscriber>(self) {
         info!("Starting monitor for Phoebus topic: {}", self.topic);
         loop {
-            let mut sub = S::new(self.phoebus_host.clone(), self.topic.clone());
-            match sub.get_stream().await.as_mut() {
-                Ok(phoebus_stream) => self.watch_stream(phoebus_stream).await,
-                Err(e) => error!("{e}"),
-            }
+            let sub = S::new(self.phoebus_host.clone(), self.topic.clone());
+            let phoebus_stream = sub.get_stream().await;
+            self.watch_stream(phoebus_stream).await;
 
             if self.cancel_token.is_cancelled() {
                 return;
             }
 
-            warn!(
-                "Stream for Phoebus topic {} was dropped. Attempting to reconnect.",
-                self.topic
-            );
             sleep(Duration::from_secs(1)).await;
         }
     }
@@ -249,20 +243,22 @@ impl Monitor {
         }
     }
 
-    /// Monitors the provided [`Stream`] and processes messages that appear there. Terminates when the stream ends or a cancel is requested.
-    async fn watch_stream(
-        &self,
-        phoebus_stream: &mut (impl Stream<Item = Result<StringMessage, PubSubError>> + Unpin + Send),
-    ) {
+    /// Monitors the provided [`MessageStream`] and processes messages that appear there. Terminates when the stream ends or a cancel is requested.
+    async fn watch_stream(&self, mut phoebus_stream: MessageStream<StringMessage>) {
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => break,
                 stream_item = phoebus_stream.next() => {
-                    let Some(stream_result) = stream_item else { break };
-                    match stream_result {
-                        Ok(message) => self.process_runtime_message(message).await,
-                        Err(e) => warn!("Error from within data stream: {e}"),
-                    }
+                    match stream_item {
+                        Some(msg) => self.process_runtime_message(msg).await,
+                        None => {
+                            warn!(
+                                "Stream for Phoebus topic {} was dropped. Attempting to reconnect.",
+                                self.topic
+                            );
+                            break
+                        }
+                    };
                 }
             }
         }
