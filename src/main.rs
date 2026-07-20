@@ -83,6 +83,15 @@ fn create_synchronizer_config() -> Result<SynchronizerConfig, ConfigLoadError> {
     ))
 }
 
+/// Spawns a gRPC health server on the address specified by the `HEALTH_ADDR` environment variable.
+///
+/// The server immediately reports [`ServingStatus::Serving`] and runs concurrently with the rest
+/// of the application. On cancellation it transitions to [`ServingStatus::NotServing`] before
+/// the task exits, giving liveness probes a clean signal during graceful shutdown. If the server
+/// itself encounters a fatal error it cancels the shared [`CancellationToken`], propagating the
+/// failure to the Phoebus and Controls synchronizers.
+///
+/// Returns a [`ConfigLoadError`] if `HEALTH_ADDR` is not set.
 fn spawn_health_server(cancel_token: CancellationToken) -> Result<(), ConfigLoadError> {
     let health_addr = env_var::get(HEALTH_ADDR)
         .to_option()
