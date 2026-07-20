@@ -1,6 +1,6 @@
 {
     "name": "Rust",
-    "image": "adregistry.fnal.gov/dev-containers/rust-with-c:1.97.0-curl",
+    "image": "adregistry.fnal.gov/dev-containers/rust-with-c:1.97.1",
     "customizations": {
         "vscode": {
             "extensions": [

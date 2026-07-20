@@ -7,18 +7,21 @@ An application to watch the Controls and Phoebus alarms servers and pass user ac
 ```mermaid
 flowchart TB
     subgraph external["External systems"]
+        HC["Health check client\n(e.g. Kubernetes liveness probe)"]
         CK["Controls Kafka\n(EPICS + ACNET alarm status)"]
         PK["Phoebus Kafka\n(config / state / command topics)"]
         GK["Controls gRPC\nAlarms Service"]
     end
 
     subgraph sync["alarms-actions-synchronizer (this service)"]
-        direction TB
+        HS["gRPC health server\n(tonic-health)"]
         CS["controls::SyncImpl\nKafka subscriber → Kafka publisher"]
         PS["phoebus::SyncImpl\nKafka snapshot + subscriber → gRPC client"]
         PVC[("PvCache\nin-scope EPICS device set")]
         ASC[("AlarmStateCache\nlatest observed state\nper device")]
     end
+
+    HC -->|"gRPC health check"| HS
 
     CK -->|"EPICS alarm status (protobuf JSON)"| CS
     CS -->|"bypass / snooze / ack\n(Phoebus JSON)"| PK
@@ -67,10 +70,11 @@ sequenceDiagram
 
 ## Architecture notes
 
-This binary runs two long-lived synchronizers in parallel:
+This binary runs three long-lived concurrent components:
 
 - [`controls::SyncImpl`](src/controls/mod.rs) watches Controls Kafka and mirrors synchronization-relevant EPICS alarm actions into Phoebus Kafka.
 - [`phoebus::SyncImpl`](src/phoebus/mod.rs) hydrates from Phoebus Kafka at startup, then watches Phoebus Kafka and mirrors supported user actions into the Controls alarms gRPC service.
+- A gRPC health server (via `tonic-health`) listens on `HEALTH_ADDR` and reports serving status for use by liveness probes. It transitions to `NotServing` on graceful shutdown.
 
 ### System role in the larger alarms landscape
 

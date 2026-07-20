@@ -14,6 +14,9 @@ use crate::models::AlarmStateCache;
 use crate::models::cache::CachedState;
 use crate::models::metadata::MetadataScope;
 
+#[cfg(test)]
+mod tests;
+
 /// A trait to describe the basic functions of a synchronization process.
 pub trait Synchronizer<P: Publisher, S: Subscriber> {
     /// Constructs a [`Synchronizer`] instance from the provided [`SynchronizerConfig`] instance.
@@ -111,7 +114,7 @@ impl PartialEq for SynchronizerConfig {
 #[derive(Debug, PartialEq)]
 pub enum ConfigLoadError {
     /// A required environment variable was not set.
-    MissingVariable(String),
+    MissingVariable(&'static str),
 }
 
 impl std::fmt::Display for ConfigLoadError {
