@@ -1,28 +1,32 @@
 [package]
 name = "alarms-actions-synchronizer"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 
 [dependencies]
-async-trait = "0.1.89"
-chrono = "0.4.45"
-prost = "0.14.4"
+chrono = "0.4"
+prost = "0.14"
 rust-env-var-lib = { git = "https://github.com/fermi-ad/rust-env-var-lib", tag = "v1.2.0" }
-rust-grpc-lib = { git = "https://github.com/fermi-ad/rust-grpc-lib", tag = "v3.0.0" }
-rust-pubsub-lib = { git = "https://github.com/fermi-ad/rust-pubsub-lib", tag = "v8.0.0", features = ["kafka"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "signal", "sync"] }
-tokio-stream = "0.1.18"
-tokio-util = "0.7.18"
-tonic = "0.14.6"
-tonic-prost = "0.14.6"
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+rust-grpc-lib = { git = "https://github.com/fermi-ad/rust-grpc-lib", tag = "v3.1.0" }
+rust-pubsub-lib = { git = "https://github.com/fermi-ad/rust-pubsub-lib", tag = "v10.0.0", features = ["kafka"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tokio-stream = "0.1"
+tokio-util = "0.7"
+tonic = "0.14"
+tonic-prost = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-rust-pubsub-lib = { git = "https://github.com/fermi-ad/rust-pubsub-lib", tag = "v8.0.0", features = ["kafka", "testing-utils"] }
-tracing-test = "0.2.6"
+rust-pubsub-lib = { git = "https://github.com/fermi-ad/rust-pubsub-lib", tag = "v10.0.0", features = ["kafka", "testing-utils"] }
+tracing-test = "0.2"
 
 [build-dependencies]
-rust-grpc-lib = { git = "https://github.com/fermi-ad/rust-grpc-lib", tag = "v3.0.0", features = ["build"] }
+rust-grpc-lib = { git = "https://github.com/fermi-ad/rust-grpc-lib", tag = "v3.1.0", features = ["build"] }
+
+[profile.release]
+incremental = false
+opt-level = 3
+lto = true

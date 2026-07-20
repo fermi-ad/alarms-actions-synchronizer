@@ -2,6 +2,69 @@
 
 An application to watch the Controls and Phoebus alarms servers and pass user actions between them.
 
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph external["External systems"]
+        CK["Controls Kafka\n(EPICS + ACNET alarm status)"]
+        PK["Phoebus Kafka\n(config / state / command topics)"]
+        GK["Controls gRPC\nAlarms Service"]
+    end
+
+    subgraph sync["alarms-actions-synchronizer (this service)"]
+        direction TB
+        CS["controls::SyncImpl\nKafka subscriber → Kafka publisher"]
+        PS["phoebus::SyncImpl\nKafka snapshot + subscriber → gRPC client"]
+        PVC[("PvCache\nin-scope EPICS device set")]
+        ASC[("AlarmStateCache\nlatest observed state\nper device")]
+    end
+
+    CK -->|"EPICS alarm status (protobuf JSON)"| CS
+    CS -->|"bypass / snooze / ack\n(Phoebus JSON)"| PK
+
+    PK -->|"startup snapshot\n(config + state messages)"| PS
+    PK -->|"runtime config + command messages"| PS
+    PS -->|"acknowledge / bypass\n/ snooze / activate RPC"| GK
+
+    CS <-->|"scope lookup"| PVC
+    CS <-->|"loop prevention\n& duplicate suppression"| ASC
+    PS <-->|"device discovery\n& scope updates"| PVC
+    PS <-->|"loop prevention\n& duplicate suppression"| ASC
+```
+
+### Data-flow summary
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant CK as Controls Kafka
+    participant CS as controls::SyncImpl
+    participant PK as Phoebus Kafka
+    participant PS as phoebus::SyncImpl
+    participant GK as Controls gRPC
+
+    Note over PS,PK: Startup — snapshot hydration
+    PS->>PK: KafkaSnapshot.get() for each topic
+    PK-->>PS: config + state messages
+    PS->>PS: populate PvCache & AlarmStateCache
+
+    Note over CS,PK: Runtime — Controls → Phoebus
+    Op->>CK: alarm action (EPICS device)
+    CK->>CS: StringMessage (Status proto)
+    CS->>CS: filter EPICS, check PvCache scope
+    CS->>CS: check AlarmStateCache (loop prevention)
+    CS->>PK: publish Phoebus command/config JSON
+
+    Note over PS,GK: Runtime — Phoebus → Controls
+    Op->>PK: alarm action (config / command message)
+    PK->>PS: StringMessage (Phoebus JSON)
+    PS->>PS: parse key, classify operation
+    PS->>PS: check AlarmStateCache (duplicate suppression)
+    PS->>GK: acknowledge / bypass / snooze / activate RPC
+    PS->>PS: update AlarmStateCache
+```
+
 ## Architecture notes
 
 This binary runs two long-lived synchronizers in parallel:

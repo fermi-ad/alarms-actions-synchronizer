@@ -52,11 +52,11 @@ async fn should_continue_when_no_cached_alarm_state() {
     };
     let message = StringMessage::from_value(serde_json::to_string(&status).unwrap());
 
-    let mut receiver = KafkaSubscriber::new(
+    let receiver = KafkaSubscriber::new(
         test_instance.harness.host().await,
         get_command_topic(&phoebus_topic),
     );
-    let mut stream = receiver.get_stream::<StringMessage>().await.unwrap();
+    let mut stream = receiver.get_stream::<StringMessage>().await;
 
     test_instance
         .has(message)
@@ -64,8 +64,7 @@ async fn should_continue_when_no_cached_alarm_state() {
             stream
                 .next()
                 .await
-                .unwrap()
-                .is_ok_and(|msg| msg.key().is_some_and(|k| k == "command:/"))
+                .is_some_and(|msg| msg.key().is_some_and(|k| k == "command:/"))
         })
         .await
         .expect("Did not receive expected message");
@@ -512,22 +511,18 @@ async fn should_sync_valid_acknowledge_message() {
     let expected_key = Some(String::from("command:/"));
     let expected_value = serde_json::to_string(&expected_command).unwrap();
 
-    let mut receiver = KafkaSubscriber::new(
+    let receiver = KafkaSubscriber::new(
         test_instance.harness.host().await,
         get_command_topic(&phoebus_topic),
     );
-    let mut stream = receiver.get_stream().await.unwrap();
+    let mut stream = receiver.get_stream().await;
 
     test_instance
         .has(message)
         .results_in(async move || {
-            stream
-                .next()
-                .await
-                .unwrap()
-                .is_ok_and(|received: StringMessage| {
-                    received.key() == expected_key && received.value() == expected_value
-                })
+            stream.next().await.is_some_and(|received: StringMessage| {
+                received.key() == expected_key && received.value() == expected_value
+            })
         })
         .await
         .expect("Expected message was not delivered to the expected Publisher");
@@ -583,19 +578,15 @@ async fn should_sync_valid_bypass_message() {
     let expected_key = Some(String::from("config:/"));
     let expected_value = serde_json::to_string(&expected_config).unwrap();
 
-    let mut receiver = KafkaSubscriber::new(test_instance.harness.host().await, phoebus_topic);
-    let mut stream = receiver.get_stream().await.unwrap();
+    let receiver = KafkaSubscriber::new(test_instance.harness.host().await, phoebus_topic);
+    let mut stream = receiver.get_stream().await;
 
     test_instance
         .has(message)
         .results_in(async move || {
-            stream
-                .next()
-                .await
-                .unwrap()
-                .is_ok_and(|received: StringMessage| {
-                    received.key() == expected_key && received.value() == expected_value
-                })
+            stream.next().await.is_some_and(|received: StringMessage| {
+                received.key() == expected_key && received.value() == expected_value
+            })
         })
         .await
         .expect("Expected message was not delivered to the expected Publisher");

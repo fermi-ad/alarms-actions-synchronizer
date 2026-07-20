@@ -1,14 +1,12 @@
 //! The tests for the main.rs file.
 
-use rust_pubsub_lib::{Message, PubSubError, Publisher, Snapshot, StringMessage, Subscriber};
-use tokio_stream::Stream;
+use rust_pubsub_lib::{Message, MessageStream, PubSubError, Publisher, Snapshot, Subscriber};
 
 use super::*;
 use crate::models::Synchronizer;
 
 #[derive(Debug)]
 struct MockPubSub;
-#[async_trait::async_trait]
 impl Publisher for MockPubSub {
     fn new(_: String, _: String) -> Self {
         unimplemented!()
@@ -18,38 +16,32 @@ impl Publisher for MockPubSub {
         unimplemented!()
     }
 }
-#[async_trait::async_trait]
 impl Snapshot for MockPubSub {
     async fn get<M: Message>(_: String, _: String) -> Result<Vec<M>, PubSubError> {
         unimplemented!()
     }
 }
-#[async_trait::async_trait]
 impl Subscriber for MockPubSub {
     fn new(_: String, _: String) -> Self {
         unimplemented!()
     }
 
-    async fn get_stream<M: Message>(
-        &mut self,
-    ) -> Result<impl Stream<Item = Result<M, PubSubError>>, PubSubError> {
-        Ok(tokio_stream::empty())
+    async fn get_stream<M: Message + 'static>(&self) -> MessageStream<M> {
+        Box::pin(tokio_stream::empty())
     }
 }
 
 struct MockSync;
-#[async_trait::async_trait]
 impl Synchronizer<MockPubSub, MockPubSub> for MockSync {
     fn new(_: SynchronizerConfig) -> Self {
         MockSync
     }
 
-    async fn synchronize<SNAP: Snapshot>(mut self) {
+    async fn synchronize<SNAP: Snapshot>(self) {
         // Do nothing
     }
 }
 
-#[async_trait::async_trait]
 impl RuntimeSyncFactory for MockSync {
     fn new(config: SynchronizerConfig) -> Self {
         <Self as Synchronizer<MockPubSub, MockPubSub>>::new(config)
@@ -83,9 +75,4 @@ fn should_setup_logging_returns_err_when_already_initialized() {
 async fn should_begin_sync() {
     let handle = begin_sync::<MockSync>(create_synchronizer_config().unwrap());
     assert_eq!((), handle.await.unwrap());
-}
-
-#[tokio::test]
-async fn mock_pubsub_stream() {
-    assert!(MockPubSub.get_stream::<StringMessage>().await.is_ok());
 }

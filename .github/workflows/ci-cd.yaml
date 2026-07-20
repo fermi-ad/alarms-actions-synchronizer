@@ -17,7 +17,7 @@ jobs:
       pull-requests: write
     with:
       references-internal-git-repo: true
-      static-dependencies: 'libcurl4-openssl-dev libsasl2-dev'
+      static-dependencies: libcurl4-openssl-dev
 
   deploy:
     needs: run-tests-and-coverage
@@ -29,4 +29,4 @@ jobs:
       pull-requests: write
     with:
       references-internal-git-repo: true
-      static-dependencies: 'libcurl4-openssl-dev libsasl2-dev'
+      static-dependencies: libcurl4-openssl-dev
