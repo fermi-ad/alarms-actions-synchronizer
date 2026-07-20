@@ -56,19 +56,19 @@ async fn main() -> Result<(), JoinError> {
 fn create_synchronizer_config() -> Result<SynchronizerConfig, ConfigLoadError> {
     let controls_host: String = env_var::get(CONTROLS_HOST)
         .to_option()
-        .ok_or_else(|| ConfigLoadError::MissingVariable(CONTROLS_HOST))?;
+        .ok_or(ConfigLoadError::MissingVariable(CONTROLS_HOST))?;
     let controls_topic: String = env_var::get(CONTROLS_TOPIC)
         .to_option()
-        .ok_or_else(|| ConfigLoadError::MissingVariable(CONTROLS_TOPIC))?;
+        .ok_or(ConfigLoadError::MissingVariable(CONTROLS_TOPIC))?;
     let grpc_alarms_svc_host: String = env_var::get(GRPC_ALARMS_SERVICE_HOST)
         .to_option()
-        .ok_or_else(|| ConfigLoadError::MissingVariable(GRPC_ALARMS_SERVICE_HOST))?;
+        .ok_or(ConfigLoadError::MissingVariable(GRPC_ALARMS_SERVICE_HOST))?;
     let phoebus_host: String = env_var::get(PHOEBUS_HOST)
         .to_option()
-        .ok_or_else(|| ConfigLoadError::MissingVariable(PHOEBUS_HOST))?;
+        .ok_or(ConfigLoadError::MissingVariable(PHOEBUS_HOST))?;
     let phoebus_topics: Vec<String> = env_var::get(PHOEBUS_TOPICS)
         .to_option::<String>()
-        .ok_or_else(|| ConfigLoadError::MissingVariable(PHOEBUS_TOPICS))?
+        .ok_or(ConfigLoadError::MissingVariable(PHOEBUS_TOPICS))?
         .split(',')
         .map(|s| s.trim().to_string())
         .collect();
@@ -95,7 +95,7 @@ fn create_synchronizer_config() -> Result<SynchronizerConfig, ConfigLoadError> {
 fn spawn_health_server(cancel_token: CancellationToken) -> Result<(), ConfigLoadError> {
     let health_addr = env_var::get(HEALTH_ADDR)
         .to_option()
-        .ok_or_else(|| ConfigLoadError::MissingVariable(HEALTH_ADDR))?;
+        .ok_or(ConfigLoadError::MissingVariable(HEALTH_ADDR))?;
 
     tokio::spawn(async move {
         let (health_reporter, health_service) = tonic_health::server::health_reporter();
