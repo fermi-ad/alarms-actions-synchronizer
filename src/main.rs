@@ -8,6 +8,9 @@ use tokio::signal;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::try_join;
 use tokio_util::sync::CancellationToken;
+use tonic::transport::Server;
+use tonic_health::ServingStatus;
+use tracing::{debug, error};
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::fmt::layer;
@@ -23,6 +26,13 @@ mod utils;
 #[cfg(test)]
 mod tests;
 
+const CONTROLS_HOST: &str = "CONTROLS_HOST";
+const CONTROLS_TOPIC: &str = "CONTROLS_TOPIC";
+const GRPC_ALARMS_SERVICE_HOST: &str = "GRPC_ALARMS_SERVICE_HOST";
+const HEALTH_ADDR: &str = "HEALTH_ADDR";
+const PHOEBUS_HOST: &str = "PHOEBUS_HOST";
+const PHOEBUS_TOPICS: &str = "PHOEBUS_TOPICS";
+
 /// The entrypoint into the application, this method sets everything in motion.
 #[tokio::main]
 async fn main() -> Result<(), JoinError> {
@@ -30,10 +40,13 @@ async fn main() -> Result<(), JoinError> {
 
     let sync_config = create_synchronizer_config().expect("Failed to load configuration");
 
+    spawn_health_server(sync_config.cancel_token.clone()).expect("Failed to spawn health endpoint");
+
     spawn_cancel_listener(sync_config.cancel_token.clone());
 
     let phoebus_handle = begin_phoebus_sync(sync_config.clone());
     let controls_handle = begin_controls_sync(sync_config);
+
     try_join!(phoebus_handle, controls_handle).map(|_| ())
 }
 
@@ -41,21 +54,21 @@ async fn main() -> Result<(), JoinError> {
 ///
 /// Returns a [`ConfigLoadError`] if any required variable is not set.
 fn create_synchronizer_config() -> Result<SynchronizerConfig, ConfigLoadError> {
-    let controls_host: String = env_var::get("CONTROLS_HOST")
+    let controls_host: String = env_var::get(CONTROLS_HOST)
         .to_option()
-        .ok_or_else(|| ConfigLoadError::MissingVariable("CONTROLS_HOST".to_string()))?;
-    let controls_topic: String = env_var::get("CONTROLS_TOPIC")
+        .ok_or(ConfigLoadError::MissingVariable(CONTROLS_HOST))?;
+    let controls_topic: String = env_var::get(CONTROLS_TOPIC)
         .to_option()
-        .ok_or_else(|| ConfigLoadError::MissingVariable("CONTROLS_TOPIC".to_string()))?;
-    let grpc_alarms_svc_host: String = env_var::get("GRPC_ALARMS_SERVICE_HOST")
+        .ok_or(ConfigLoadError::MissingVariable(CONTROLS_TOPIC))?;
+    let grpc_alarms_svc_host: String = env_var::get(GRPC_ALARMS_SERVICE_HOST)
         .to_option()
-        .ok_or_else(|| ConfigLoadError::MissingVariable("GRPC_ALARMS_SERVICE_HOST".to_string()))?;
-    let phoebus_host: String = env_var::get("PHOEBUS_HOST")
+        .ok_or(ConfigLoadError::MissingVariable(GRPC_ALARMS_SERVICE_HOST))?;
+    let phoebus_host: String = env_var::get(PHOEBUS_HOST)
         .to_option()
-        .ok_or_else(|| ConfigLoadError::MissingVariable("PHOEBUS_HOST".to_string()))?;
-    let phoebus_topics: Vec<String> = env_var::get("PHOEBUS_TOPICS")
+        .ok_or(ConfigLoadError::MissingVariable(PHOEBUS_HOST))?;
+    let phoebus_topics: Vec<String> = env_var::get(PHOEBUS_TOPICS)
         .to_option::<String>()
-        .ok_or_else(|| ConfigLoadError::MissingVariable("PHOEBUS_TOPICS".to_string()))?
+        .ok_or(ConfigLoadError::MissingVariable(PHOEBUS_TOPICS))?
         .split(',')
         .map(|s| s.trim().to_string())
         .collect();
@@ -68,6 +81,48 @@ fn create_synchronizer_config() -> Result<SynchronizerConfig, ConfigLoadError> {
         phoebus_host,
         phoebus_topics,
     ))
+}
+
+/// Spawns a gRPC health server on the address specified by the `HEALTH_ADDR` environment variable.
+///
+/// The server immediately reports [`ServingStatus::Serving`] and runs concurrently with the rest
+/// of the application. On cancellation it transitions to [`ServingStatus::NotServing`] before
+/// the task exits, giving liveness probes a clean signal during graceful shutdown. If the server
+/// itself encounters a fatal error it cancels the shared [`CancellationToken`], propagating the
+/// failure to the Phoebus and Controls synchronizers.
+///
+/// Returns a [`ConfigLoadError`] if `HEALTH_ADDR` is not set.
+fn spawn_health_server(cancel_token: CancellationToken) -> Result<(), ConfigLoadError> {
+    let health_addr = env_var::get(HEALTH_ADDR)
+        .to_option()
+        .ok_or(ConfigLoadError::MissingVariable(HEALTH_ADDR))?;
+
+    tokio::spawn(async move {
+        let (health_reporter, health_service) = tonic_health::server::health_reporter();
+        health_reporter
+            .set_service_status("", ServingStatus::Serving)
+            .await;
+
+        debug!("Starting internal gRPC health server at {}", health_addr);
+
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                health_reporter
+                    .set_service_status("", ServingStatus::NotServing)
+                    .await;
+            }
+            server_exit = Server::builder()
+                .add_service(health_service)
+                .serve(health_addr) => {
+                if let Err(err) = server_exit {
+                    error!("{err}");
+                    cancel_token.cancel();
+                }
+            }
+        }
+    });
+
+    Ok(())
 }
 
 fn spawn_cancel_listener(cancel_token: CancellationToken) {

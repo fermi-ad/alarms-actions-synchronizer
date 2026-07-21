@@ -3,6 +3,7 @@
 CONTROLS_HOST = "test host"
 CONTROLS_TOPIC = "test topic"
 GRPC_ALARMS_SERVICE_HOST = "test host"
+HEALTH_ADDR = "127.0.0.1:0"
 KAFKA_CONNECTION_SECONDS = "1"
 PHOEBUS_HOST = "test host"
 PHOEBUS_TOPICS = "topic1,topic2"

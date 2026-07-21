@@ -76,3 +76,11 @@ async fn should_begin_sync() {
     let handle = begin_sync::<MockSync>(create_synchronizer_config().unwrap());
     assert_eq!((), handle.await.unwrap());
 }
+
+#[tokio::test]
+async fn should_spawn_health_server() {
+    let token = CancellationToken::new();
+    token.cancel();
+    let result = spawn_health_server(token);
+    assert!(result.is_ok());
+}
