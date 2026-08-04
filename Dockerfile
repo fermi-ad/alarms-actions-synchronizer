@@ -1,11 +1,7 @@
-FROM adregistry.fnal.gov/dev-containers/redhat-ubi9-minimal
+FROM adregistry.fnal.gov/dev-containers/redhat-ubi9-minimal@sha256:ec08129f809d3a00e60e040fef825da752872b561e3a20250f3232209907e130
 
-ARG USER=runner
-ENV HOME=/home/$USER
+COPY target/release/alarms-actions-synchronizer /usr/local/bin/alarms-actions-synchronizer
 
-RUN useradd --system --create-home --home-dir $HOME --shell /sbin/nologin $USER
-USER $USER
+USER 10001
 
-WORKDIR $HOME
-COPY --chown=$USER:$USER target/release/alarms-actions-synchronizer $HOME/alarms-actions-synchronizer
-CMD [ "./alarms-actions-synchronizer" ]
+ENTRYPOINT ["/usr/local/bin/alarms-actions-synchronizer"]
