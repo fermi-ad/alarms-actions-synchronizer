@@ -11,7 +11,7 @@ on:
 
 jobs:
   run-tests-and-coverage:
-    uses: fermi-ad/.github/.github/workflows/rust-integration.yaml@bbb0d5297b687cee04820ed0b2fea5b4c8d4b4b9
+    uses: fermi-ad/.github/.github/workflows/rust-integration.yaml@swb_v2
     secrets: inherit
     permissions:
       contents: write
@@ -23,7 +23,7 @@ jobs:
   deploy:
     needs: run-tests-and-coverage
     if: ${{ github.event_name == 'push' }}
-    uses: fermi-ad/.github/.github/workflows/rust-deployment.yaml@bbb0d5297b687cee04820ed0b2fea5b4c8d4b4b9
+    uses: fermi-ad/.github/.github/workflows/rust-deployment.yaml@swb_v2
     secrets: inherit
     permissions:
       contents: write
