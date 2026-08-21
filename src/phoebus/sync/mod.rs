@@ -2,7 +2,8 @@
 //!
 //! Handles how updates from Phoebus are communicated to the Controls alarms server.
 
-use rust_grpc_lib::pool;
+use rust_grpc_lib::auth::{ClientJwtInterceptor, ForwardedToken};
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
 use tracing::{error, info};
 
@@ -83,9 +84,13 @@ impl ControlsClient {
     ) -> OutboundSyncResult
     where
         Request: Clone,
-        AlarmCommandsClient<Channel>: CommandRequest<Request>,
+        AlarmCommandsClient<ClientInner>: CommandRequest<Request>,
     {
-        let mut client = match pool::get(&self.grpc_alarms_svc_host) {
+        // TODO Swap out the ForwardedToken with a service token provider when the deployment has been configured with one.
+        let mut client = match AlarmCommandsClient::from_endpoint_with_provider(
+            &self.grpc_alarms_svc_host,
+            ForwardedToken::new(""),
+        ) {
             Err(e) => {
                 error!("Could not get a connection to the Controls alarms service: {e}");
                 return OutboundSyncResult::Failed;
@@ -93,7 +98,7 @@ impl ControlsClient {
             Ok(c) => c,
         };
 
-        if Self::run_operation(&mut client, request.clone()).await {
+        if run_operation(&mut client, request.clone()).await {
             return OutboundSyncResult::Succeeded;
         }
 
@@ -102,27 +107,29 @@ impl ControlsClient {
             "Initial RPC failed. Making one more attempt."
         );
 
-        if Self::run_operation(&mut client, request).await {
+        if run_operation(&mut client, request).await {
             OutboundSyncResult::Succeeded
         } else {
             OutboundSyncResult::Failed
         }
     }
+}
 
-    /// Sends a single gRPC request using the provided client and returns `true` if it succeeded.
-    async fn run_operation<Request>(
-        conn: &mut AlarmCommandsClient<Channel>,
-        request: Request,
-    ) -> bool
-    where
-        AlarmCommandsClient<Channel>: CommandRequest<Request>,
-    {
-        match conn.send_request(request).await {
-            Ok(_) => true,
-            Err(error) => {
-                error!("Failed to send command to Controls alarms service: {error}");
-                false
-            }
+type ClientInner = InterceptedService<Channel, ClientJwtInterceptor<ForwardedToken>>;
+
+/// Sends a single gRPC request using the provided client and returns `true` if it succeeded.
+async fn run_operation<Request>(
+    conn: &mut AlarmCommandsClient<ClientInner>,
+    request: Request,
+) -> bool
+where
+    AlarmCommandsClient<ClientInner>: CommandRequest<Request>,
+{
+    match conn.send_request(request).await {
+        Ok(_) => true,
+        Err(error) => {
+            error!("Failed to send command to Controls alarms service: {error}");
+            false
         }
     }
 }
@@ -136,28 +143,28 @@ trait CommandRequest<Request> {
     async fn send_request(&mut self, request: Request) -> Result<(), tonic::Status>;
 }
 
-impl CommandRequest<AcknowledgeRequest> for AlarmCommandsClient<Channel> {
+impl CommandRequest<AcknowledgeRequest> for AlarmCommandsClient<ClientInner> {
     async fn send_request(&mut self, request: AcknowledgeRequest) -> Result<(), tonic::Status> {
         self.acknowledge(request).await?;
         Ok(())
     }
 }
 
-impl CommandRequest<ActivateRequest> for AlarmCommandsClient<Channel> {
+impl CommandRequest<ActivateRequest> for AlarmCommandsClient<ClientInner> {
     async fn send_request(&mut self, request: ActivateRequest) -> Result<(), tonic::Status> {
         self.activate(request).await?;
         Ok(())
     }
 }
 
-impl CommandRequest<BypassRequest> for AlarmCommandsClient<Channel> {
+impl CommandRequest<BypassRequest> for AlarmCommandsClient<ClientInner> {
     async fn send_request(&mut self, request: BypassRequest) -> Result<(), tonic::Status> {
         self.bypass(request).await?;
         Ok(())
     }
 }
 
-impl CommandRequest<SnoozeRequest> for AlarmCommandsClient<Channel> {
+impl CommandRequest<SnoozeRequest> for AlarmCommandsClient<ClientInner> {
     async fn send_request(&mut self, request: SnoozeRequest) -> Result<(), tonic::Status> {
         self.snooze(request).await?;
         Ok(())

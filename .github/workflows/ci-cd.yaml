@@ -8,25 +8,25 @@ on:
     branches:
       - main
 
+
 jobs:
   run-tests-and-coverage:
-    uses: fermi-ad/.github/.github/workflows/rust-integration.yaml@v1
+    uses: fermi-ad/.github/.github/workflows/rust-integration.yaml@swb_v2
     secrets: inherit
     permissions:
       contents: write
       pull-requests: write
     with:
+      coverage-exclude: '|.*/tests.rs$'
       references-internal-git-repo: true
-      static-dependencies: libcurl4-openssl-dev
 
   deploy:
     needs: run-tests-and-coverage
     if: ${{ github.event_name == 'push' }}
-    uses: fermi-ad/.github/.github/workflows/rust-deployment.yaml@v1
+    uses: fermi-ad/.github/.github/workflows/rust-deployment.yaml@swb_v2
     secrets: inherit
     permissions:
       contents: write
       pull-requests: write
     with:
       references-internal-git-repo: true
-      static-dependencies: libcurl4-openssl-dev

@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn should_return_failed_when_host_is_unreachable() {
-    let client = ControlsClient::new("http://127.0.0.1:1");
+    let client = ControlsClient::new("http://127.0.0.1:0");
 
     let result = client.acknowledge_alarm("MyDevice", "my-user").await;
 
@@ -12,7 +12,7 @@ async fn should_return_failed_when_host_is_unreachable() {
 #[tokio::test]
 #[tracing_test::traced_test]
 async fn should_log_retry_exhaustion_when_both_attempts_fail() {
-    let client = ControlsClient::new("http://127.0.0.1:1");
+    let client = ControlsClient::new("http://127.0.0.1:0");
 
     // Seed a fake connected client so the first attempt proceeds past connection
     // but fails on the actual RPC (unreachable host), then reconnect also fails.
